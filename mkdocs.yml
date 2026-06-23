@@ -1,0 +1,77 @@
+site_name: DocLens
+site_description: Multi-tenant intelligent document extraction platform on AWS Serverless
+site_url: https://cincuentaydos.github.io/DocLens.Docs
+repo_url: https://github.com/cincuentaydos/DocLens.Docs
+repo_name: cincuentaydos/DocLens.Docs
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.tabs.link
+    - content.code.annotation
+    - content.code.copy
+    - content.action.edit
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.mark
+  - admonition
+  - attr_list
+  - md_in_html
+  - footnotes
+  - tables
+
+nav:
+  - Home: index.md
+  - Overview: overview.md
+  - Architecture: architecture.md
+  - Data Flow: data-flow.md
+  - ADRs:
+    - ADR-001 — RAG Strategy: adrs/001-rag-strategy.md
+    - ADR-002 — IaC Strategy: adrs/002-iac-strategy.md
+    - ADR-003 — OCR Strategy: adrs/003-ocr-strategy.md
+  - Projects:
+    - DocLens.Lambda: projects/lambda.md
+    - DocLens.Web.Template: projects/web-template.md
+    - DocLens.Skills: projects/skills.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/cincuentaydos
