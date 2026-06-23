@@ -1,33 +1,33 @@
 # ADR-002 — IaC Strategy
 
-**Status:** Proposed — pending team decision (2026-06-10)
+**Status:** Accepted (2026-06-22)
 
 ---
 
-## Decision Under Consideration
+## Decision
 
-**AWS CDK (C#)** vs **Terraform** as the primary IaC tool for the DocLens backend.
+Use **Terraform** as the primary IaC tool for DocLens infrastructure.
 
-## Comparison
+## Rationale
+
+The team has prior Terraform knowledge and a working mental model for HCL-based infrastructure. Leveraging that familiarity reduces ramp-up time and keeps the infrastructure layer predictable from day one.
 
 | Dimension | AWS CDK (C#) | Terraform |
-|---|---|---|
-| Team familiarity | Low (new toolchain) | High (used in allerac-one) |
+| --- | --- | --- |
+| Team familiarity | Low (new toolchain) | High |
 | Language consistency | High (C# throughout) | Low (HCL separate) |
 | AWS new service support | Fast (first-class) | Delayed (provider lag) |
 | State management | CloudFormation (opaque) | Explicit `.tfstate` (transparent) |
 | Cross-provider resources | No | Yes |
 | Higher-level constructs | Yes (L2/L3) | No (explicit only) |
 | Lambda packaging | Native | Manual |
-| Existing team reference | No | Yes (allerac-one) |
 
-## Open Questions
+## Constraints to Watch
 
-1. Is Terraform AWS provider support for Bedrock Knowledge Bases sufficient?
-2. Remote state backend: S3 + DynamoDB (allerac-one pattern) or Terraform Cloud?
-3. Mono-repo (infra inside project) or separate infra repo?
-4. If Terraform chosen: is `aws_cloudformation_stack` acceptable as an escape hatch for unsupported resources?
+- Terraform AWS provider support for Bedrock Knowledge Bases may lag behind new features — use `aws_cloudformation_stack` as an escape hatch if a resource is not yet supported.
+- Remote state backend: S3 + DynamoDB lock table (standard pattern for AWS-hosted projects).
+- Lambda packaging requires manual zip + upload steps — consider a `null_resource` or `terraform-aws-lambda` module to automate this.
 
 ## Current State
 
-AWS CDK (C#) is in use today as the primary IaC tool for the Lambda backend (`infra/src/DocLens.Infra/`). Terraform scaffolding also exists in `infra/terraform/` (Lambda project) and `infra/` (Web template) from early exploration.
+Terraform scaffolding exists in `infra/terraform/` (Lambda project) and `infra/` (Web template). AWS CDK scaffolding (`infra/src/DocLens.Infra/`) was created during early exploration and will be removed as Terraform coverage grows.
