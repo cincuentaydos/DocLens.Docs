@@ -56,6 +56,9 @@ markdown_extensions:
   - md_in_html
   - footnotes
   - tables
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 nav:
   - Home: index.md
@@ -66,6 +69,7 @@ nav:
     - ADR-001 — RAG Strategy: adrs/001-rag-strategy.md
     - ADR-002 — IaC Strategy: adrs/002-iac-strategy.md
     - ADR-003 — OCR Strategy: adrs/003-ocr-strategy.md
+    - IaC Comparison (CDK vs Terraform): adrs/iac-comparison.md
   - Projects:
     - DocLens.Lambda: projects/lambda.md
     - DocLens.Web.Template: projects/web-template.md
