@@ -14,7 +14,7 @@
 | Document Storage | Amazon S3 |
 | Notifications | Amazon SNS / SQS (post-extraction notifications) |
 | Observability | Amazon CloudWatch + AWS X-Ray + AWS Lambda Powertools |
-| IaC | AWS CDK (C#) — primary; Terraform scaffolding also present |
+| IaC | Terraform (HCL) — primary; AWS CDK scaffolding present but being phased out |
 | Frontend | React 19, TypeScript, Vite, Feature-Sliced Design |
 | Frontend IaC | Terraform (environments: dev / staging / production) |
 
@@ -100,8 +100,9 @@ Tenant isolation at the RAG layer is enforced via S3 metadata files and a mandat
 
 ## IaC Strategy
 
-See [ADR-002](adrs/002-iac-strategy.md) for the full analysis (CDK vs Terraform — decision pending).
+See [ADR-002](adrs/002-iac-strategy.md) for the full rationale.
 
-- AWS CDK (C#) is the current primary IaC tooling for the Lambda backend.
-- Terraform scaffolding exists both in `infra/terraform/` (Lambda project) and `infra/` (Web template).
-- Manual `dotnet lambda deploy-function` is used during early development.
+- **Terraform (HCL)** is the primary IaC tool for all DocLens infrastructure.
+- Terraform state: S3 backend + DynamoDB lock table.
+- Terraform code lives in `infra/terraform/` (Lambda project) and `infra/` (Web template).
+- AWS CDK scaffolding (`infra/src/DocLens.Infra/`) exists from early exploration and is being removed as Terraform coverage grows.

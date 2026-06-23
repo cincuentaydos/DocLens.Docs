@@ -1,9 +1,7 @@
-# DocLens
-
-**Multi-tenant intelligent document extraction platform on AWS Serverless.**
-
-Companies upload documents — invoices, contracts, reports, CVs — and receive structured data extracted automatically through a pipeline of OCR and semantic AI analysis.
-
+---
+template: home.html
+hide:
+  - toc
 ---
 
 ## Repositories

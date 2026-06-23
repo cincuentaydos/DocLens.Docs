@@ -1,0 +1,45 @@
+{% extends "main.html" %}
+
+{% block content %}
+<div class="md-content" data-md-component="content">
+
+  <div class="doclens-hero md-content__inner">
+    <p class="doclens-hero__eyebrow">Project 52</p>
+    <h1 class="doclens-hero__title">
+      Intelligent document<br><em>extraction</em>, at scale.
+    </h1>
+    <p class="doclens-hero__sub">
+      Upload invoices, contracts, and reports — receive structured data extracted through
+      a hybrid pipeline of OCR and Bedrock AI analysis, across isolated tenants on AWS Serverless.
+    </p>
+    <div class="doclens-scan" aria-hidden="true">
+      <span class="doclens-scan__track"><span class="doclens-scan__beam"></span></span>
+      <span class="doclens-scan__label">Extracting</span>
+      <span class="doclens-scan__track"><span class="doclens-scan__beam"></span></span>
+    </div>
+    <div class="doclens-meta">
+      <div class="doclens-meta__item">
+        <span class="doclens-meta__value">AWS Serverless</span>
+        <span class="doclens-meta__label">Compute</span>
+      </div>
+      <div class="doclens-meta__item">
+        <span class="doclens-meta__value">Bedrock · Claude</span>
+        <span class="doclens-meta__label">AI Engine</span>
+      </div>
+      <div class="doclens-meta__item">
+        <span class="doclens-meta__value">Multi-tenant</span>
+        <span class="doclens-meta__label">Architecture</span>
+      </div>
+      <div class="doclens-meta__item">
+        <span class="doclens-meta__value">.NET 10</span>
+        <span class="doclens-meta__label">Runtime</span>
+      </div>
+    </div>
+  </div>
+
+  <article class="md-content__inner md-typeset">
+    {{ page.content }}
+  </article>
+
+</div>
+{% endblock %}

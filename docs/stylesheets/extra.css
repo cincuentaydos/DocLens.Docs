@@ -1,0 +1,390 @@
+/* ================================================================
+   DocLens — Design System
+   Palette : Deep Navy × Amber × Sky Blue  (from DocLens logo)
+   Type    : Space Grotesk (headings) · IBM Plex Sans (body) · JetBrains Mono (code)
+   Signature: scan-beam animation on home hero
+   ================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap');
+
+/* ---- Token layer ---- */
+
+:root {
+  /* Amber — from the golden gradient of the DocLens logo cloud */
+  --dl-amber:         #F5A825;
+  --dl-amber-lt:      #F8C255;
+  --dl-amber-dk:      #C88620;
+
+  /* Sky Blue — from the bright blue of the DocLens logo cloud */
+  --dl-sky:           #3A9EE0;
+  --dl-sky-lt:        #6DC5F2;
+  --dl-sky-dk:        #1A6FAE;
+
+  /* Deep Navy — from the cloud outline / dark tones in the logo */
+  --dl-navy-0:        #06101E;
+  --dl-navy-1:        #0C1A2E;
+  --dl-navy-2:        #112238;
+  --dl-navy-3:        #182E4A;
+  --dl-navy-border:   #1F3D5E;
+
+  /* Text (dark mode) */
+  --dl-text:          #C8DDEF;
+  --dl-text-mid:      #5A8BAE;
+  --dl-text-dim:      #2A4E6C;
+
+  /* Code syntax */
+  --dl-green:         #5DB88A;
+}
+
+/* ================================================================
+   DARK SCHEME (default)
+   ================================================================ */
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color:             var(--dl-amber);
+  --md-primary-fg-color--light:      var(--dl-amber-lt);
+  --md-primary-fg-color--dark:       var(--dl-amber-dk);
+  --md-primary-bg-color:             var(--dl-navy-1);
+  --md-primary-bg-color--light:      rgba(12, 26, 46, 0.54);
+
+  --md-accent-fg-color:              var(--dl-sky);
+  --md-accent-fg-color--transparent: rgba(58, 158, 224, 0.12);
+  --md-accent-bg-color:              var(--dl-navy-3);
+
+  --md-default-bg-color:             var(--dl-navy-0);
+  --md-default-bg-color--light:      var(--dl-navy-1);
+  --md-default-bg-color--lighter:    var(--dl-navy-2);
+  --md-default-bg-color--lightest:   var(--dl-navy-3);
+
+  --md-default-fg-color:             var(--dl-text);
+  --md-default-fg-color--light:      var(--dl-text-mid);
+  --md-default-fg-color--lighter:    var(--dl-text-dim);
+  --md-default-fg-color--lightest:   rgba(42, 78, 108, 0.3);
+
+  --md-code-bg-color:                var(--dl-navy-2);
+  --md-code-fg-color:                #B8D4EC;
+  --md-code-hl-comment-color:        var(--dl-text-mid);
+  --md-code-hl-punctuation-color:    var(--dl-text);
+  --md-code-hl-string-color:         var(--dl-green);
+  --md-code-hl-keyword-color:        var(--dl-amber-lt);
+  --md-code-hl-number-color:         var(--dl-sky-lt);
+  --md-code-hl-function-color:       var(--dl-sky-lt);
+  --md-code-hl-name-color:           var(--dl-text);
+  --md-code-hl-operator-color:       var(--dl-text-mid);
+  --md-code-hl-special-color:        var(--dl-amber-lt);
+
+  --md-typeset-table-color:          rgba(31, 61, 94, 0.55);
+  --md-typeset-table-color--light:   rgba(31, 61, 94, 0.25);
+
+  --md-admonition-bg-color:          var(--dl-navy-3);
+}
+
+/* ================================================================
+   LIGHT SCHEME
+   ================================================================ */
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color:             #1A2B5A;
+  --md-primary-fg-color--light:      var(--dl-sky);
+  --md-primary-fg-color--dark:       #0D1A3A;
+  --md-primary-bg-color:             #F1F4F9;
+  --md-primary-bg-color--light:      rgba(241, 244, 249, 0.7);
+  --md-accent-fg-color:              var(--dl-amber);
+  --md-accent-fg-color--transparent: rgba(245, 168, 37, 0.12);
+}
+
+/* ================================================================
+   TYPOGRAPHY
+   ================================================================ */
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-family: 'Space Grotesk', var(--md-text-font, sans-serif);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+.md-typeset h1 {
+  font-size: 1.85rem;
+  line-height: 1.2;
+}
+
+.md-typeset h2 {
+  font-size: 1.3rem;
+  margin-top: 2.4em;
+  padding-bottom: 0.5em;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset h3 {
+  font-size: 1.05rem;
+}
+
+/* ================================================================
+   LOGO
+   ================================================================ */
+
+.md-header__button.md-logo img {
+  height: 2rem;
+  width: auto;
+  border-radius: 6px;
+}
+
+/* ================================================================
+   HEADER & NAVIGATION
+   ================================================================ */
+
+[data-md-color-scheme="slate"] .md-header {
+  box-shadow: none;
+  border-bottom: 1px solid var(--dl-navy-border);
+}
+
+.md-header__title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+[data-md-color-scheme="slate"] .md-nav__link--active,
+[data-md-color-scheme="slate"] .md-nav__item--active > .md-nav__link {
+  color: var(--dl-amber) !important;
+}
+
+/* ================================================================
+   CODE
+   ================================================================ */
+
+.md-typeset :not(pre) > code {
+  border-radius: 3px;
+  padding: 0.1em 0.4em;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre {
+  border-left: 3px solid var(--dl-sky);
+  border-radius: 0 4px 4px 0;
+}
+
+/* ================================================================
+   TABLES
+   ================================================================ */
+
+.md-typeset table:not([class]) th {
+  font-family: 'Space Grotesk', var(--md-text-font, sans-serif);
+  font-size: 0.73rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dl-amber);
+  background: transparent;
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) th {
+  border-bottom: 1px solid var(--dl-amber-dk);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:hover td {
+  background: rgba(245, 168, 37, 0.05);
+}
+
+/* ================================================================
+   CARDS
+   ================================================================ */
+
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > :is(ul, ol) > li {
+  border: 1px solid var(--dl-navy-border);
+  background: var(--dl-navy-3);
+  border-radius: 4px;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .grid.cards > :is(ul, ol) > li:hover {
+  border-color: var(--dl-sky);
+  background: rgba(58, 158, 224, 0.06);
+}
+
+/* ================================================================
+   ADMONITIONS
+   ================================================================ */
+
+[data-md-color-scheme="slate"] .md-typeset .admonition,
+[data-md-color-scheme="slate"] .md-typeset details {
+  background: var(--dl-navy-3);
+  border-left-width: 3px;
+  border-radius: 0 4px 4px 0;
+}
+
+/* ================================================================
+   FOOTER
+   ================================================================ */
+
+[data-md-color-scheme="slate"] .md-footer {
+  border-top: 1px solid var(--dl-navy-border);
+  background: var(--dl-navy-1);
+}
+
+/* ================================================================
+   SEARCH
+   ================================================================ */
+
+[data-md-color-scheme="slate"] .md-search__form {
+  background: var(--dl-navy-2);
+  border: 1px solid var(--dl-navy-border);
+  box-shadow: none;
+}
+
+[data-md-color-scheme="slate"] .md-search__form:focus-within {
+  border-color: var(--dl-sky);
+}
+
+/* Fix: input text is dark on dark background when search is collapsed */
+[data-md-color-scheme="slate"] .md-search__input {
+  color: var(--dl-text) !important;
+  caret-color: var(--dl-amber);
+}
+
+[data-md-color-scheme="slate"] .md-search__input::placeholder {
+  color: var(--dl-text-mid) !important;
+  opacity: 1;
+}
+
+/* ================================================================
+   HOME HERO
+   ================================================================ */
+
+.doclens-hero {
+  padding: 3.5rem 0 2rem;
+}
+
+.doclens-hero__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dl-sky);
+  margin: 0 0 1.4rem;
+}
+
+.doclens-hero__eyebrow::before {
+  content: '';
+  display: block;
+  width: 1.8rem;
+  height: 1px;
+  background: var(--dl-sky);
+  flex-shrink: 0;
+}
+
+.doclens-hero__title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: clamp(2rem, 4.5vw, 3.2rem);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.08;
+  color: var(--md-default-fg-color);
+  margin: 0 0 1.2rem;
+  padding: 0;
+  border: none;
+}
+
+.doclens-hero__title em {
+  font-style: normal;
+  color: var(--dl-amber);
+}
+
+.doclens-hero__sub {
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--dl-text-mid);
+  max-width: 58ch;
+  margin: 0 0 2rem;
+}
+
+/* ---- Scan beam — the signature element ---- */
+
+.doclens-scan {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 2.5rem;
+}
+
+.doclens-scan__label {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dl-text-dim);
+  user-select: none;
+}
+
+.doclens-scan__track {
+  width: 4rem;
+  height: 1px;
+  background: var(--dl-navy-border);
+  position: relative;
+  overflow: hidden;
+}
+
+[data-md-color-scheme="default"] .doclens-scan__track {
+  background: #BDD0E0;
+}
+
+.doclens-scan__beam {
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent 0%, var(--dl-amber) 50%, transparent 100%);
+  animation: dl-beam 2.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.doclens-scan__track:last-child .doclens-scan__beam {
+  animation-delay: -1.4s;
+}
+
+@keyframes dl-beam {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doclens-scan__beam {
+    animation: none;
+    opacity: 0.4;
+    transform: translateX(50%);
+  }
+}
+
+/* ---- Meta row ---- */
+
+.doclens-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2.5rem;
+}
+
+.doclens-meta__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.doclens-meta__value {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--md-default-fg-color);
+}
+
+.doclens-meta__label {
+  font-size: 0.68rem;
+  font-weight: 400;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--dl-text-mid);
+}

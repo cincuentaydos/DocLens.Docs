@@ -7,19 +7,23 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  custom_dir: overrides
   palette:
-    - scheme: default
-      primary: indigo
-      accent: indigo
+    - scheme: slate
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
-        name: Switch to dark mode
-    - scheme: slate
-      primary: indigo
-      accent: indigo
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
-        name: Switch to light mode
+        name: Switch to dark mode
+  font:
+    text: IBM Plex Sans
+    code: JetBrains Mono
   features:
     - navigation.tabs
     - navigation.sections
@@ -32,9 +36,14 @@ theme:
     - content.code.annotation
     - content.code.copy
     - content.action.edit
+  logo: assets/logo.png
+  favicon: assets/logo.png
   language: en
   icon:
     repo: fontawesome/brands/github
+
+extra_css:
+  - stylesheets/extra.css
 
 plugins:
   - search
