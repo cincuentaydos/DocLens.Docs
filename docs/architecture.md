@@ -21,53 +21,24 @@
 
 ## Component Map
 
-```
-                    ┌───────────────────────────────────────────┐
-                    │              Tenant (Client)               │
-                    └──────────┬─────────────────┬─────────────┘
-                               │ HTTPS            │ PUT (pre-signed URL)
-                               │ (API calls)      │ (direct upload — bypasses Lambda)
-                    ┌──────────▼──────────┐       │
-                    │  Amazon API Gateway  │       │
-                    │    (HTTP API v2)     │       │
-                    └──────────┬──────────┘       │
-                               │ JWT (Cognito)     │
-                    ┌──────────▼──────────┐       │
-                    │  AWS Lambda (.NET 10)│       │
-                    │                     │       │
-                    │  TenantMiddleware    │       │
-                    │  DocumentEndpoints  │       │
-                    │  ExtractionService  │       │
-                    │   ┌──────┴──────┐   │       │
-                    │  Ocr        Semantic│       │
-                    └───┬─────────────┬───┘       │
-                        │             │            │
-          ┌─────────────▼──┐  ┌───────▼────────┐  │
-          │ Amazon Textract │  │ Amazon Bedrock  │  │
-          │ (OCR)           │  │ (Claude)        │  │
-          └─────────────────┘  └───────┬────────┘  │
-                                       │            │
-                              ┌────────▼────────┐   │
-                              │ Bedrock Knowledge│   │
-                              │ Bases (RAG)      │   │
-                              └─────────────────┘   │
-                                                     ▼
-          ┌──────────────────────────────────────────────────────┐
-          │                   Amazon S3                          │
-          │  {tenantId}/{year}/{month}/{documentId}.pdf          │
-          └──────────────────────────┬───────────────────────────┘
-                                     │ scans on upload
-                          ┌──────────▼──────────┐
-                          │  GuardDuty Malware   │
-                          │  Protection for S3   │
-                          │  → tags object with  │
-                          │    scan result       │
-                          └─────────────────────┘
-          ┌──────────────────────────────────────────────────────┐
-          │  Amazon DynamoDB              Amazon SQS             │
-          │  (document status + results)  (post-extraction        │
-          │  PK: TENANT#{tenantId}         notifier only)        │
-          └──────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    Client["Tenant Client"]
+
+    Client -->|"HTTPS — API calls"| APIGW["Amazon API Gateway\nHTTP API v2"]
+    Client -->|"PUT — pre-signed URL\ndirect upload, bypasses Lambda"| S3
+
+    APIGW -->|"JWT validated via Cognito"| Lambda["AWS Lambda .NET 10\nTenantMiddleware · DocumentEndpoints\nExtractionService · OcrService · SemanticService"]
+
+    Lambda -->|"OCR"| Textract["Amazon Textract"]
+    Lambda -->|"semantic analysis"| Bedrock["Amazon Bedrock\nClaude via InvokeModel"]
+    Bedrock -.->|"RAG"| KB["Bedrock Knowledge Bases\nchunking · embedding · retrieval"]
+
+    Lambda -->|"reads scan tag · writes result"| S3["Amazon S3\n{tenantId}/{year}/{month}/{documentId}.pdf"]
+    S3 -->|"auto-scan on upload"| GD["GuardDuty\nMalware Protection for S3"]
+
+    Lambda --> DDB["Amazon DynamoDB\nPK: TENANT#tenantId · SK: DOCUMENT#documentId"]
+    Lambda -->|"notifier only"| SQS["Amazon SQS\npost-extraction events"]
 ```
 
 ## Multi-Tenancy Model
