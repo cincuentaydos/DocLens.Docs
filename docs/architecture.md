@@ -13,6 +13,7 @@
 | Operational DB | Amazon DynamoDB |
 | Document Storage | Amazon S3 |
 | Notifications | Amazon SNS / SQS (post-extraction notifications) |
+| Security | Amazon GuardDuty Malware Protection for S3 (upload scanning) |
 | Observability | Amazon CloudWatch + AWS X-Ray + AWS Lambda Powertools |
 | IaC | Terraform (HCL) — primary; AWS CDK scaffolding present but being phased out |
 | Frontend | React 19, TypeScript, Vite, Feature-Sliced Design |
@@ -23,37 +24,49 @@
 ```
                     ┌───────────────────────────────────────────┐
                     │              Tenant (Client)               │
-                    └────────────────────┬──────────────────────┘
-                                         │ HTTPS
-                    ┌────────────────────▼──────────────────────┐
-                    │         Amazon API Gateway (HTTP v2)       │
-                    └────────────────────┬──────────────────────┘
-                                         │ JWT (Cognito)
-                    ┌────────────────────▼──────────────────────┐
-                    │            AWS Lambda (.NET 10)            │
-                    │                                            │
-                    │  TenantMiddleware ──► DocumentEndpoints    │
-                    │                          │                 │
-                    │              DocumentExtractionService     │
-                    │               ┌──────────┴──────────┐     │
-                    │        OcrService          SemanticService │
-                    │       (Textract)            (Bedrock)      │
-                    └───────┬───────────────────────┬───────────┘
-                            │                       │
-          ┌─────────────────▼───┐      ┌────────────▼────────────┐
-          │    Amazon Textract   │      │    Amazon Bedrock        │
-          │    (OCR / text       │      │    (Claude — field       │
-          │     extraction)      │      │     extraction)          │
-          └─────────────────────┘      └─────────────────────────┘
-                                                    │
-                                       ┌────────────▼────────────┐
-                                       │  Bedrock Knowledge Bases │
-                                       │  (RAG: chunking,         │
-                                       │   embedding, retrieval)  │
-                                       └─────────────────────────┘
+                    └──────────┬─────────────────┬─────────────┘
+                               │ HTTPS            │ PUT (pre-signed URL)
+                               │ (API calls)      │ (direct upload — bypasses Lambda)
+                    ┌──────────▼──────────┐       │
+                    │  Amazon API Gateway  │       │
+                    │    (HTTP API v2)     │       │
+                    └──────────┬──────────┘       │
+                               │ JWT (Cognito)     │
+                    ┌──────────▼──────────┐       │
+                    │  AWS Lambda (.NET 10)│       │
+                    │                     │       │
+                    │  TenantMiddleware    │       │
+                    │  DocumentEndpoints  │       │
+                    │  ExtractionService  │       │
+                    │   ┌──────┴──────┐   │       │
+                    │  Ocr        Semantic│       │
+                    └───┬─────────────┬───┘       │
+                        │             │            │
+          ┌─────────────▼──┐  ┌───────▼────────┐  │
+          │ Amazon Textract │  │ Amazon Bedrock  │  │
+          │ (OCR)           │  │ (Claude)        │  │
+          └─────────────────┘  └───────┬────────┘  │
+                                       │            │
+                              ┌────────▼────────┐   │
+                              │ Bedrock Knowledge│   │
+                              │ Bases (RAG)      │   │
+                              └─────────────────┘   │
+                                                     ▼
           ┌──────────────────────────────────────────────────────┐
-          │  Amazon S3          Amazon DynamoDB     Amazon SQS   │
-          │  (document store)   (extraction results) (notifier)  │
+          │                   Amazon S3                          │
+          │  {tenantId}/{year}/{month}/{documentId}.pdf          │
+          └──────────────────────────┬───────────────────────────┘
+                                     │ scans on upload
+                          ┌──────────▼──────────┐
+                          │  GuardDuty Malware   │
+                          │  Protection for S3   │
+                          │  → tags object with  │
+                          │    scan result       │
+                          └─────────────────────┘
+          ┌──────────────────────────────────────────────────────┐
+          │  Amazon DynamoDB              Amazon SQS             │
+          │  (document status + results)  (post-extraction        │
+          │  PK: TENANT#{tenantId}         notifier only)        │
           └──────────────────────────────────────────────────────┘
 ```
 
@@ -97,6 +110,23 @@ DocLens owns: document intake, OCR, S3 layout, metadata authoring, ingestion job
 Bedrock Knowledge Bases owns: chunking (semantic strategy), embedding, vector store, index lifecycle.
 
 Tenant isolation at the RAG layer is enforced via S3 metadata files and a mandatory `tenantId` filter on every `Retrieve` / `RetrieveAndGenerate` call.
+
+## Upload Strategy — Pre-signed URL
+
+See [ADR-005](adrs/005-upload-strategy.md) for the full analysis.
+
+Clients upload documents directly to S3 using a short-lived pre-signed PUT URL, bypassing Lambda entirely. This avoids the 10 MB API Gateway payload limit and eliminates unnecessary data transfer through the compute layer.
+
+1. Client calls `POST /documents/prepare` — receives `{ documentId, uploadUrl }`.
+2. Client PUTs the file directly to S3 using `uploadUrl` (15-minute TTL, `application/pdf` only).
+3. GuardDuty scans the object and tags it with the scan result.
+4. Client calls `POST /documents/process` — Lambda reads the scan tag before invoking Textract or Bedrock.
+
+## Malware Scanning — GuardDuty
+
+See [ADR-004](adrs/004-malware-scanning.md) for the full analysis.
+
+GuardDuty Malware Protection for S3 scans every uploaded object automatically. The processing Lambda gates extraction on the `GuardDutyMalwareScanStatus` tag: `CLEAN` proceeds, `THREATS_FOUND` and `UNSCANNABLE` return `422`, and an absent tag (scan still running) returns `409`.
 
 ## IaC Strategy
 

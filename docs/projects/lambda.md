@@ -22,6 +22,7 @@ src/
     Models/
       Requests/        # Inbound DTOs (C# records)
       Responses/       # Outbound DTOs (C# records)
+    Options/           # Strongly-typed config bindings (BedrockOptions)
     Services/
       Extraction/      # Orchestrator: DocumentExtractionService
       Ocr/             # Textract wrapper: TextractOcrService
@@ -109,6 +110,26 @@ dotnet lambda deploy-function --project-location src/DocLens.Lambda
 ```
 
 Full CDK-based deployment is defined in `infra/src/DocLens.Infra/` but not yet wired to a pipeline.
+
+## Configuration Reference
+
+All settings live in `appsettings.json` and can be overridden via environment variables in Lambda using the `__` separator (e.g. `Bedrock__ModelId`).
+
+| Section | Key | Default | Description |
+|---|---|---|---|
+| `Bedrock` | `ModelId` | `anthropic.claude-3-haiku-20240307-v1:0` | Bedrock model ID used for semantic extraction |
+| `Bedrock` | `MaxTokens` | `1024` | Maximum tokens in the Bedrock response |
+| `Logging.LogLevel` | `Default` | `Information` | Minimum log level for application code |
+| `Logging.LogLevel` | `Microsoft.AspNetCore` | `Warning` | Minimum log level for ASP.NET Core internals |
+
+**Overriding in Lambda (AWS Console or Terraform):**
+
+```
+Bedrock__ModelId   = anthropic.claude-3-5-sonnet-20241022-v2:0
+Bedrock__MaxTokens = 2048
+```
+
+Strongly-typed binding is handled by `Options/BedrockOptions.cs`, registered with `ValidateOnStart()` — a misconfigured value causes the Lambda to fail fast on cold start rather than at request time.
 
 ## Testing
 

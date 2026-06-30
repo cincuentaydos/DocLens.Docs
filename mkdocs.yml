@@ -74,10 +74,15 @@ nav:
   - Overview: overview.md
   - Architecture: architecture.md
   - Data Flow: data-flow.md
+  - API Reference: api-reference.md
+  - Tenant Onboarding: tenant-onboarding.md
   - ADRs:
     - ADR-001 — RAG Strategy: adrs/001-rag-strategy.md
     - ADR-002 — IaC Strategy: adrs/002-iac-strategy.md
     - ADR-003 — OCR Strategy: adrs/003-ocr-strategy.md
+    - ADR-004 — Malware Scanning: adrs/004-malware-scanning.md
+    - ADR-005 — Upload Strategy: adrs/005-upload-strategy.md
+    - ADR-006 — Sync vs Async Processing: adrs/006-sync-vs-async-processing.md
     - IaC Comparison (CDK vs Terraform): adrs/iac-comparison.md
   - Projects:
     - DocLens.Lambda: projects/lambda.md

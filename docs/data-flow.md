@@ -1,60 +1,130 @@
 # Data Flow
 
-## Document Processing Flow
+## Full Upload and Processing Flow
+
+The complete flow from a client uploading a document to receiving extraction results spans three steps: prepare, upload, and process.
 
 ```
-Client
+Client                        API Gateway + Lambda                  AWS
+  │                                     │                            │
+  │── POST /documents/prepare ─────────►│                            │
+  │   Authorization: Bearer <JWT>        │                            │
+  │                                     │ TenantMiddleware            │
+  │                                     │  → resolves tenantId        │
+  │                                     │ generates documentId (GUID) │
+  │                                     │── PutObject pre-signed ────►│ S3
+  │                                     │   URL (15 min TTL,          │
+  │                                     │   PUT only, PDF only)       │
+  │                                     │── writes PENDING record ───►│ DynamoDB
+  │◄── { documentId, uploadUrl } ───────│                            │
+  │                                     │                            │
+  │── PUT {uploadUrl} (file bytes) ────────────────────────────────►│ S3
+  │   (direct — bypasses Lambda)         │                            │
+  │◄── 200 OK ──────────────────────────────────────────────────────│
+  │                                     │                            │
+  │                                     │         GuardDuty scans object (async, seconds)
+  │                                     │                            │
+  │── POST /documents/process ─────────►│                            │
+  │   { "documentId": "...",            │ reads GuardDutyMalware     │
+  │     "s3Key": "...",                 │ ScanStatus tag ───────────►│ S3
+  │     "documentType": "Invoice" }     │                            │
+  │                                     │  THREATS_FOUND/UNSCANNABLE │
+  │                                     │    → 422 Unprocessable     │
+  │                                     │  tag absent                │
+  │                                     │    → 409 Conflict (retry)  │
+  │                                     │  CLEAN → proceed           │
+  │                                     │── ExtractTextAsync ───────►│ Textract
+  │                                     │◄── raw text ───────────────│
+  │                                     │── InvokeModel ────────────►│ Bedrock/Claude
+  │                                     │◄── structured fields ──────│
+  │                                     │── writes result ──────────►│ DynamoDB
+  │                                     │── publishes event ────────►│ SQS
+  │◄── 200 OK { documentId, fields } ──│                            │
+```
+
+> See [ADR-005](adrs/005-upload-strategy.md) for the upload mechanism rationale (pre-signed URL vs. backend proxy).
+> See [ADR-004](adrs/004-malware-scanning.md) for the malware scanning gate logic.
+
+---
+
+## Step 1 — Prepare (`POST /documents/prepare`)
+
+```
+API Gateway → TenantMiddleware → DocumentEndpoints.PrepareUpload
   │
-  │  POST /documents/process
-  │  Authorization: Bearer <Cognito JWT>
-  │  { "documentId": "...", "s3Key": "...", "documentType": "Invoice" }
+  │  Validates Cognito JWT
+  │  Resolves tenantId from custom:tenantId claim
+  │  Generates documentId (GUID)
+  │  Constructs S3 key: {tenantId}/{year}/{month}/{documentId}.pdf
+  │  Generates pre-signed PUT URL (15-minute TTL, Content-Type: application/pdf)
+  │  Writes DynamoDB record: PK=TENANT#{tenantId}, SK=DOCUMENT#{documentId}, Status=PENDING
   ▼
-API Gateway (HTTP API v2)
-  │
-  │  Validates JWT signature via Cognito
-  │  Forwards request + decoded claims to Lambda
+Response: { documentId, uploadUrl }
+```
+
+---
+
+## Step 2 — Upload (Client → S3 directly)
+
+The client PUTs the file bytes directly to the pre-signed URL. This call goes to S3, not to API Gateway or Lambda.
+
+```
+Client PUT {uploadUrl}
+  Content-Type: application/pdf
+  Body: <file bytes>
   ▼
-TenantMiddleware
-  │
-  │  Reads custom:tenantId claim from JWT
-  │  Returns 401 if claim is missing or empty
-  │  Sets TenantContext.TenantId for the request lifetime
+S3 accepts the object at {tenantId}/{year}/{month}/{documentId}.pdf
   ▼
-DocumentEndpoints.ProcessDocument
+GuardDuty Malware Protection scans the object (seconds)
+  ▼
+S3 object tagged: GuardDutyMalwareScanStatus = CLEAN | THREATS_FOUND | UNSCANNABLE
+```
+
+---
+
+## Step 3 — Process (`POST /documents/process`)
+
+```
+API Gateway → TenantMiddleware → DocumentEndpoints.ProcessDocument
   │
-  │  Deserialises ProcessDocumentRequest
-  │  Delegates to IDocumentExtractionService
   ▼
 DocumentExtractionService.ExtractAsync
   │
+  ├── S3:GetObjectTagging(s3Key)
+  │     GuardDutyMalwareScanStatus = THREATS_FOUND → 422 Unprocessable Entity
+  │     GuardDutyMalwareScanStatus = UNSCANNABLE   → 422 Unprocessable Entity
+  │     tag absent                                 → 409 Conflict (scan pending, retry)
+  │     GuardDutyMalwareScanStatus = CLEAN         → proceed
+  │
   ├──► IOcrService.ExtractTextAsync(s3Key)
   │      │
-  │      │  [Hybrid fast path]
-  │      ├── PdfPig: try in-process text extraction from PDF bytes
-  │      │     ✓ If text > threshold → return text immediately
-  │      │     ✗ If text < threshold → fall through to Textract
+  │      │  [Hybrid fast path — see ADR-003]
+  │      ├── PdfPig: in-process extraction from PDF bytes
+  │      │     ✓ text > threshold → return immediately (free, milliseconds)
+  │      │     ✗ text < threshold → fall through
   │      └── TextractOcrService: DetectDocumentText / StartDocumentTextDetection
-  │            → Returns raw text string
+  │            → returns raw text string
   │
   └──► ISemanticAnalysisService.AnalyzeAsync(rawText, documentType)
          │
          │  BedrockSemanticAnalysisService:
          │    BuildPrompt(documentType) → type-specific extraction prompt
-         │    InvokeModel → Claude on Amazon Bedrock
+         │    InvokeModel (ModelId from BedrockOptions config) → Claude on Bedrock
          │    Parse JSON response → Dictionary<string, string> fields
-         └── Returns extracted fields
+         └── returns extracted fields
   │
+  │  Updates DynamoDB record: Status=COMPLETED, Fields=..., ProcessedAt=...
+  │  Publishes ExtractionCompleted event to SQS (notifier only)
   │  Assembles ExtractionResult:
   │    { DocumentId, TenantId, DocumentType, Fields, ProcessedAt }
   ▼
-API Gateway → Client
-  HTTP 200 OK
-  { "documentId": "...", "tenantId": "...", "fields": { ... }, "processedAt": "..." }
+HTTP 200 OK
+{ "documentId": "...", "tenantId": "...", "documentType": "...", "fields": { ... }, "processedAt": "..." }
 ```
 
-## S3 Storage Convention
+---
 
-Documents uploaded by a tenant are stored under a path that encodes tenant, date, and document identity:
+## S3 Storage Convention
 
 ```
 s3://<bucket>/{tenantId}/{year}/{month}/{documentId}.pdf
@@ -76,44 +146,58 @@ s3://<bucket>/{tenantId}/{year}/{month}/{documentId}.pdf.metadata.json
 }
 ```
 
-## DynamoDB Storage Convention
+---
 
-Extraction results are persisted with a partition key that scopes data per tenant:
+## DynamoDB Storage Convention
 
 ```
 PK: TENANT#{tenantId}
 SK: DOCUMENT#{documentId}
 ```
 
+Document lifecycle states written to this record:
+
+| Status | Written at |
+|---|---|
+| `PENDING` | `POST /documents/prepare` |
+| `COMPLETED` | `POST /documents/process` — success |
+| `REJECTED` | `POST /documents/process` — scan failed |
+
+---
+
 ## RAG Ingestion Flow
 
-After extraction, if the document needs to be indexed for semantic search / RAG queries:
+After extraction, if the document needs to be indexed for semantic search:
 
 ```
-1. Clean text / original PDF written to S3 (path above)
+1. Clean text / original PDF already in S3 (from upload step)
 2. Metadata file written alongside it
 3. StartIngestionJob triggered on the Knowledge Base
 4. Bedrock Knowledge Bases: chunk → embed → index (OpenSearch Serverless)
 
 At query time:
   Retrieve(query, filter: { tenantId: "..." })
-  → Returns relevant chunks scoped to that tenant only
+  → returns relevant chunks scoped to that tenant only
   → RetrieveAndGenerate passes chunks to Claude for answer synthesis
 ```
 
-## Post-Extraction Notification Flow
+See [ADR-001](adrs/001-rag-strategy.md) for the full RAG strategy rationale.
 
-After a successful extraction, an event is published to SQS for downstream consumers:
+---
+
+## Post-Extraction Notification Flow
 
 ```
 DocumentExtractionService
-  → Publish ExtractionCompleted event to SQS
-    → Consumer (e.g., email Lambda) reads from queue
-    → Sends notification to tenant contact
+  → publish ExtractionCompleted event to SQS
+    → consumer Lambda reads from queue
+    → sends notification to tenant contact
 ```
 
 !!! note
-    SQS is used as a **notifier only** — it does not trigger the extraction pipeline itself.
+    SQS is used as a **notifier only** — it does not trigger the extraction pipeline.
+
+---
 
 ## Key Data Contracts
 
