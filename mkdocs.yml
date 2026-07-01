@@ -90,6 +90,7 @@ nav:
     - ADR-004 — Malware Scanning: adrs/004-malware-scanning.md
     - ADR-005 — Upload Strategy: adrs/005-upload-strategy.md
     - ADR-006 — Sync vs Async Processing: adrs/006-sync-vs-async-processing.md
+    - ADR-007 — Document Versioning: adrs/007-document-versioning.md
     - IaC Comparison (CDK vs Terraform): adrs/iac-comparison.md
   - Projects:
     - DocLens.Lambda: projects/lambda.md

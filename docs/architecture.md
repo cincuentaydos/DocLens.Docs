@@ -34,10 +34,10 @@ graph TD
     Lambda -->|"semantic analysis"| Bedrock["Amazon Bedrock\nClaude via InvokeModel"]
     Bedrock -.->|"RAG"| KB["Bedrock Knowledge Bases\nchunking · embedding · retrieval"]
 
-    Lambda -->|"reads scan tag · writes result"| S3["Amazon S3\n{tenantId}/{year}/{month}/{documentId}.pdf"]
+    Lambda -->|"reads scan tag · writes result"| S3["Amazon S3\n{tenantId}/documents/{documentId}/v{n}.pdf"]
     S3 -->|"auto-scan on upload"| GD["GuardDuty\nMalware Protection for S3"]
 
-    Lambda --> DDB["Amazon DynamoDB\nPK: TENANT#tenantId · SK: DOCUMENT#documentId"]
+    Lambda --> DDB["Amazon DynamoDB\nPK: TENANT#tenantId\nSK: DOCUMENT#id · DOCUMENT#id#VERSION#n"]
     Lambda -->|"notifier only"| SQS["Amazon SQS\npost-extraction events"]
 ```
 
@@ -49,7 +49,7 @@ DocLens uses a **logical silo** approach: all tenants share the same infrastruct
 |---|---|
 | API / Auth | `custom:tenantId` claim in Cognito JWT |
 | Middleware | `TenantMiddleware` resolves `TenantId` before any handler runs |
-| S3 | Key prefix: `{tenantId}/{year}/{month}/{documentId}.pdf` |
+| S3 | Key prefix: `{tenantId}/documents/{documentId}/v{versionNumber}.pdf` |
 | DynamoDB | Partition key: `TENANT#{tenantId}` |
 | Bedrock Knowledge Bases | Metadata filter: `{ "tenantId": "..." }` on every `Retrieve` call |
 | Logs | Structured log field `TenantId` on every log entry |
@@ -88,16 +88,31 @@ See [ADR-005](adrs/005-upload-strategy.md) for the full analysis.
 
 Clients upload documents directly to S3 using a short-lived pre-signed PUT URL, bypassing Lambda entirely. This avoids the 10 MB API Gateway payload limit and eliminates unnecessary data transfer through the compute layer.
 
-1. Client calls `POST /documents/prepare` — receives `{ documentId, uploadUrl }`.
+1. Client calls `POST /documents/prepare` — optionally passes an existing `documentId` to create a new version; receives `{ documentId, versionNumber, uploadUrl }`.
 2. Client PUTs the file directly to S3 using `uploadUrl` (15-minute TTL, `application/pdf` only).
 3. GuardDuty scans the object and tags it with the scan result.
-4. Client calls `POST /documents/process` — Lambda reads the scan tag before invoking Textract or Bedrock.
+4. Client calls `POST /documents/process` — Lambda reads the scan tag, computes SHA-256, runs extraction, and stores the diff against the previous version.
 
 ## Malware Scanning — GuardDuty
 
 See [ADR-004](adrs/004-malware-scanning.md) for the full analysis.
 
 GuardDuty Malware Protection for S3 scans every uploaded object automatically. The processing Lambda gates extraction on the `GuardDutyMalwareScanStatus` tag: `CLEAN` proceeds, `THREATS_FOUND` and `UNSCANNABLE` return `422`, and an absent tag (scan still running) returns `409`.
+
+## Document Versioning
+
+See [ADR-007](adrs/007-document-versioning.md) for the full analysis.
+
+A `documentId` is the stable identifier for a document across all its versions. Each upload creates a new `versionNumber` (sequential integer) under the same `documentId`. The Lambda computes SHA-256 after the GuardDuty scan — identical content is flagged as `DUPLICATE` without re-extracting. After successful extraction, a JSON Patch diff (RFC 6902) against the previous version's fields is computed and stored alongside the full fields in DynamoDB.
+
+| Concept | Detail |
+|---|---|
+| Stable ID | `documentId` — chosen at first upload, never changes |
+| Version | `versionNumber` — sequential integer, starts at 1 |
+| Duplicate detection | SHA-256 of PDF bytes compared against latest version |
+| Diff | JSON Patch stored per version — shows what changed in extracted fields |
+| S3 layout | `{tenantId}/documents/{documentId}/v{versionNumber}.pdf` |
+| DynamoDB | Two item types per document: group record + one version record per upload |
 
 ## IaC Strategy
 

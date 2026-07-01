@@ -28,27 +28,31 @@ Authorization: Bearer <token>
 Content-Type: application/json
 
 {
-  "documentType": "Invoice"
+  "documentType": "Invoice",
+  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `documentType` | string (enum) | Yes | One of: `Invoice`, `Contract`, `Report`, `Cv` |
+| `documentId` | string (UUID) | No | If provided, creates a new version of an existing document. If absent, starts a new document (v1). |
 
 **Response — `201 Created`**
 
 ```json
 {
   "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "versionNumber": 2,
   "uploadUrl": "https://s3.amazonaws.com/...",
-  "expiresAt": "2026-06-30T15:30:00Z"
+  "expiresAt": "2026-07-01T10:15:00Z"
 }
 ```
 
 | Field | Description |
 |---|---|
-| `documentId` | Stable identifier for this document — use in subsequent calls |
+| `documentId` | Stable identifier for this document across all versions |
+| `versionNumber` | Version number for this upload — `1` for new documents, incremented for subsequent versions |
 | `uploadUrl` | Pre-signed S3 PUT URL. Valid for 15 minutes. Accepts `application/pdf` only |
 | `expiresAt` | UTC timestamp when `uploadUrl` expires |
 
@@ -58,6 +62,8 @@ Content-Type: application/json
 |---|---|
 | `401 Unauthorized` | Missing or invalid JWT, or `tenantId` claim absent |
 | `400 Bad Request` | Invalid or missing `documentType` |
+| `403 Forbidden` | `documentId` provided but does not belong to the authenticated tenant |
+| `404 Not Found` | `documentId` provided but does not exist |
 
 ---
 
@@ -74,7 +80,8 @@ Content-Type: application/json
 
 {
   "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "s3Key": "tenant-abc/2026/06/3fa85f64-5717-4562-b3fc-2c963f66afa6.pdf",
+  "versionNumber": 2,
+  "s3Key": "tenant-abc/documents/3fa85f64-5717-4562-b3fc-2c963f66afa6/v2.pdf",
   "documentType": "Invoice"
 }
 ```
@@ -82,7 +89,8 @@ Content-Type: application/json
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `documentId` | string (UUID) | Yes | Returned by `POST /documents/prepare` |
-| `s3Key` | string | Yes | S3 object key of the uploaded file |
+| `versionNumber` | number | Yes | Returned by `POST /documents/prepare` |
+| `s3Key` | string | Yes | S3 object key of the uploaded file — must match `{tenantId}/documents/{documentId}/v{versionNumber}.pdf` |
 | `documentType` | string (enum) | Yes | One of: `Invoice`, `Contract`, `Report`, `Cv` |
 
 !!! danger "S3 key tenant validation"
@@ -93,36 +101,133 @@ Content-Type: application/json
 ```json
 {
   "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "versionNumber": 2,
   "tenantId": "tenant-abc",
   "documentType": "Invoice",
+  "status": "COMPLETED",
   "fields": {
     "issuer": "Acme Corp",
     "invoice_number": "INV-2026-001",
     "issue_date": "2026-06-01",
-    "due_date": "2026-06-30",
-    "total_amount": "1500.00",
+    "due_date": "2026-08-01",
+    "total_amount": "1800.00",
     "currency": "EUR"
   },
-  "processedAt": "2026-06-30T14:22:10Z"
+  "diffFromPrevious": [
+    { "op": "replace", "path": "/total_amount", "value": "1800.00" },
+    { "op": "replace", "path": "/due_date", "value": "2026-08-01" }
+  ],
+  "processedAt": "2026-07-01T10:20:00Z"
 }
 ```
 
 | Field | Description |
 |---|---|
-| `documentId` | Echo of the input document ID |
+| `documentId` | Stable document identifier |
+| `versionNumber` | Version number of this upload |
 | `tenantId` | Tenant resolved from the JWT — never supplied by the client |
-| `documentType` | Echo of the input document type |
-| `fields` | Extracted fields as key-value pairs. Keys depend on document type (see below) |
-| `processedAt` | UTC timestamp of when extraction completed |
+| `documentType` | Document type used for extraction |
+| `status` | `COMPLETED` — extraction succeeded; `DUPLICATE` — same content as previous version, no re-extraction |
+| `fields` | Extracted fields. Absent when `status` is `DUPLICATE` — refer to the previous version |
+| `diffFromPrevious` | JSON Patch (RFC 6902) diff of `fields` against the previous version. Absent for v1 or when `DUPLICATE` |
+| `processedAt` | UTC timestamp of when processing completed |
 
 **Error responses**
 
 | Status | Condition |
 |---|---|
 | `401 Unauthorized` | Missing or invalid JWT, or `tenantId` claim absent |
-| `400 Bad Request` | Missing required fields |
+| `400 Bad Request` | Missing required fields or `s3Key` does not match expected pattern |
+| `403 Forbidden` | `s3Key` prefix does not match the authenticated tenant |
 | `409 Conflict` | GuardDuty scan not yet complete — client should retry with backoff |
 | `422 Unprocessable Entity` | File tagged `THREATS_FOUND` or `UNSCANNABLE` by GuardDuty |
+
+---
+
+### `GET /documents/{documentId}/versions`
+
+Lists all versions of a document in reverse chronological order (latest first).
+
+**Request**
+
+```http
+GET /documents/3fa85f64-5717-4562-b3fc-2c963f66afa6/versions
+Authorization: Bearer <token>
+```
+
+**Response — `200 OK`**
+
+```json
+{
+  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "documentType": "Invoice",
+  "latestVersion": 2,
+  "versions": [
+    {
+      "versionNumber": 2,
+      "status": "COMPLETED",
+      "sha256": "e3b0c44298fc1c149afb...",
+      "processedAt": "2026-07-01T10:20:00Z"
+    },
+    {
+      "versionNumber": 1,
+      "status": "COMPLETED",
+      "sha256": "a87ff679a2f3e71d9181...",
+      "processedAt": "2026-06-15T09:05:00Z"
+    }
+  ]
+}
+```
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `401 Unauthorized` | Missing or invalid JWT |
+| `403 Forbidden` | Document does not belong to the authenticated tenant |
+| `404 Not Found` | `documentId` does not exist |
+
+---
+
+### `GET /documents/{documentId}/versions/{versionNumber}`
+
+Returns the full extracted fields and diff for a specific version.
+
+**Request**
+
+```http
+GET /documents/3fa85f64-5717-4562-b3fc-2c963f66afa6/versions/2
+Authorization: Bearer <token>
+```
+
+**Response — `200 OK`**
+
+```json
+{
+  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "versionNumber": 2,
+  "tenantId": "tenant-abc",
+  "documentType": "Invoice",
+  "status": "COMPLETED",
+  "sha256": "e3b0c44298fc1c149afb...",
+  "fields": {
+    "issuer": "Acme Corp",
+    "total_amount": "1800.00"
+  },
+  "diffFromPrevious": [
+    { "op": "replace", "path": "/total_amount", "value": "1800.00" }
+  ],
+  "processedAt": "2026-07-01T10:20:00Z"
+}
+```
+
+**Error responses**
+
+| Status | Condition |
+|---|---|
+| `401 Unauthorized` | Missing or invalid JWT |
+| `403 Forbidden` | Document does not belong to the authenticated tenant |
+| `404 Not Found` | `documentId` or `versionNumber` does not exist |
 
 ---
 
@@ -179,22 +284,38 @@ The `fields` object in the `POST /documents/process` response contains different
 
 ## Client Integration Flow
 
-```
-1. POST /documents/prepare
-   → receive { documentId, uploadUrl }
+=== "New document (v1)"
 
-2. PUT {uploadUrl}
-   Content-Type: application/pdf
-   Body: <file bytes>
-   (direct S3 call — not through API Gateway)
-   → receive 200 from S3
+    ```
+    1. POST /documents/prepare  { documentType }
+       → receive { documentId, versionNumber: 1, uploadUrl }
 
-3. Wait a few seconds for GuardDuty to scan the object
+    2. PUT {uploadUrl}  (direct S3 — bypasses Lambda)
+       → 200 OK from S3
 
-4. POST /documents/process
-   → receive extraction result
-   → if 409, retry with backoff (scan still running)
-```
+    3. Wait a few seconds for GuardDuty to scan
+
+    4. POST /documents/process  { documentId, versionNumber: 1, s3Key, documentType }
+       → receive { status: "COMPLETED", fields, versionNumber: 1 }
+       → if 409, retry with backoff
+    ```
+
+=== "New version of existing document"
+
+    ```
+    1. POST /documents/prepare  { documentType, documentId }
+       → receive { documentId, versionNumber: 2, uploadUrl }
+
+    2. PUT {uploadUrl}  (direct S3 — bypasses Lambda)
+       → 200 OK from S3
+
+    3. Wait a few seconds for GuardDuty to scan
+
+    4. POST /documents/process  { documentId, versionNumber: 2, s3Key, documentType }
+       → receive { status: "COMPLETED", fields, diffFromPrevious, versionNumber: 2 }
+       → if status "DUPLICATE", content unchanged — refer to previous version
+       → if 409, retry with backoff
+    ```
 
 !!! warning "409 retry behaviour"
     A `409 Conflict` means the GuardDuty scan has not yet completed. Implement an exponential backoff retry — typically the scan finishes within 5–15 seconds. Do not poll more than a few times; if the scan does not complete within a reasonable window, surface an error to the user.
