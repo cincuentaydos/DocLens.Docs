@@ -193,4 +193,4 @@ The `IDocumentExtractionService` interface isolates the extraction logic from th
 
 ## Open Questions
 
-- **Pending team discussion:** should `POST /documents/process` be removed in favor of the fully event-driven trigger described in [Option 3](#option-3--fully-event-driven-s3--sqs-directly-proposed--under-discussion-not-yet-decided) (S3 Event Notification → SQS directly)? This would remove the intake Lambda's `/process` endpoint and resolve the "abandoned `PENDING` record" open question in ADR-005, at the cost of making the GuardDuty tag-absent retry path the common case instead of the exception.
+- **Pending team discussion:** should `POST /documents/process` be removed in favor of the fully event-driven trigger described in [Option 3](#option-3-fully-event-driven-s3-sqs-directly-proposed-under-discussion-not-yet-decided) (S3 Event Notification → SQS directly)? This would remove the intake Lambda's `/process` endpoint and resolve the "abandoned `PENDING` record" open question in ADR-005, at the cost of making the GuardDuty tag-absent retry path the common case instead of the exception.
