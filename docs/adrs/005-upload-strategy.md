@@ -45,7 +45,7 @@ The frontend calls a lightweight backend endpoint (`POST /documents/prepare`) th
 
 - **No payload limit:** S3 supports objects up to 5 TB; the Lambda never buffers the file.
 - **Cost:** data transfer goes client → S3 directly; Lambda is only invoked for the short metadata call.
-- **Tenant isolation enforced at URL generation:** the backend controls the S3 key (`{tenantId}/{year}/{month}/{documentId}.pdf`), the allowed content type, and the URL TTL. The client cannot deviate from these constraints.
+- **Tenant isolation enforced at URL generation:** the backend controls the S3 key (`{tenantId}/documents/{documentId}/v{versionNumber}.pdf`), the allowed content type, and the URL TTL. The client cannot deviate from these constraints.
 - **Decoupled concerns:** the Lambda handles auth and metadata; S3 handles storage. Each does what it is designed for.
 - **Standard pattern** for S3 uploads in serverless architectures; well-understood by frontend teams.
 
@@ -75,21 +75,22 @@ The frontend calls a lightweight backend endpoint (`POST /documents/prepare`) th
 `POST /documents/prepare` is the single backend call required before upload. It:
 
 1. Validates the authenticated tenant (via `TenantMiddleware` — `tenantId` from Cognito JWT).
-2. Generates a `documentId` (GUID).
-3. Constructs the S3 key: `{tenantId}/{year}/{month}/{documentId}.pdf`.
-4. Creates a pre-signed PUT URL scoped to that exact key, with a **15-minute TTL** and `Content-Type: application/pdf` constraint.
-5. Writes a `PENDING` record to DynamoDB (`PK: TENANT#{tenantId}`, `SK: DOCUMENT#{documentId}`).
-6. Returns `{ documentId, uploadUrl }`.
+2. Generates a `documentId` (GUID) if not provided, or validates the supplied `documentId` belongs to the authenticated tenant.
+3. Determines `versionNumber` — `1` for new documents, `latestVersion + 1` for subsequent versions.
+4. Constructs the S3 key: `{tenantId}/documents/{documentId}/v{versionNumber}.pdf`.
+5. Creates a pre-signed PUT URL scoped to that exact key, with a **15-minute TTL** and `Content-Type: application/pdf` constraint.
+6. Writes a `PENDING` version record to DynamoDB (`PK: TENANT#{tenantId}`, `SK: DOCUMENT#{documentId}#VERSION#{versionNumber}`).
+7. Returns `{ documentId, versionNumber, uploadUrl, expiresAt }`.
 
-The frontend PUTs the file directly to `uploadUrl`. Once the PUT completes, the frontend calls `POST /documents/process` with the `documentId`. At that point the processing Lambda verifies the GuardDuty scan tag (see [ADR-004](004-malware-scanning.md)) before invoking Textract and Bedrock.
+The frontend PUTs the file directly to `uploadUrl`. Once the PUT completes, the frontend calls `POST /documents/process` with the `documentId`, `versionNumber`, and `s3Key` — the intake Lambda enqueues a job and returns `202 Accepted` immediately. The worker Lambda then handles the GuardDuty gate internally (see [ADR-004](004-malware-scanning.md)) before invoking Textract and Bedrock. The client polls `GET /documents/{documentId}/versions/{versionNumber}` for the result.
 
 **S3 key convention:**
 
 ```
-{tenantId}/{year}/{month}/{documentId}.pdf
+{tenantId}/documents/{documentId}/v{versionNumber}.pdf
 ```
 
-This matches the existing convention documented in the Lambda CLAUDE.md and ensures all S3 policies, lifecycle rules, and audit logs are naturally scoped per tenant.
+This convention (adopted in [ADR-007](007-document-versioning.md)) makes every version independently addressable, scopes all S3 policies and lifecycle rules per tenant, and supports per-version lifecycle management without relying on S3 native versioning.
 
 **Pre-signed URL constraints enforced by S3:**
 
@@ -107,7 +108,7 @@ A client holding the pre-signed URL can only PUT a PDF to that specific key with
 ## Consequences
 
 - **IAM:** the Lambda execution role must include `s3:PutObject` on the upload bucket (to generate the pre-signed URL) and `s3:GetObjectTagging` (to read the GuardDuty scan result at processing time).
-- **DynamoDB:** the `PENDING` record written at prepare time allows the system to detect abandoned uploads (documents prepared but never processed) for cleanup.
+- **DynamoDB:** the `PENDING` version record written at prepare time allows the system to detect abandoned uploads (documents prepared but never processed) for cleanup. The group record is also created (or updated) at this point to track `latestVersion`.
 - **Frontend:** two-step flow — `POST /documents/prepare` then `PUT {uploadUrl}` then `POST /documents/process`. The PUT is a direct S3 call, not through API Gateway.
 - **CORS:** the S3 bucket must have a CORS policy allowing PUT from the frontend origin.
 - **Content-Type enforcement:** the `Content-Type: application/pdf` constraint on the pre-signed URL means non-PDF uploads are rejected by S3 before reaching the processing pipeline.

@@ -69,7 +69,7 @@ Content-Type: application/json
 
 ### `POST /documents/process`
 
-Triggers OCR and semantic extraction for a previously uploaded document. Reads the GuardDuty scan tag from S3 before processing.
+Enqueues the document for asynchronous OCR and semantic extraction. Returns `202 Accepted` immediately — the client polls `GET /documents/{documentId}/versions/{versionNumber}` for the result. GuardDuty gate, SHA check, and extraction are handled internally by the worker Lambda.
 
 **Request**
 
@@ -96,41 +96,16 @@ Content-Type: application/json
 !!! danger "S3 key tenant validation"
     The Lambda **must** verify that the `s3Key` prefix matches the `tenantId` resolved from the JWT before reading the object. A client that passes an `s3Key` belonging to another tenant must receive `403 Forbidden`. This check is the last line of defence against cross-tenant data access at the processing layer.
 
-**Response — `200 OK`**
+**Response — `202 Accepted`**
 
 ```json
 {
   "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "versionNumber": 2,
-  "tenantId": "tenant-abc",
-  "documentType": "Invoice",
-  "status": "COMPLETED",
-  "fields": {
-    "issuer": "Acme Corp",
-    "invoice_number": "INV-2026-001",
-    "issue_date": "2026-06-01",
-    "due_date": "2026-08-01",
-    "total_amount": "1800.00",
-    "currency": "EUR"
-  },
-  "diffFromPrevious": [
-    { "op": "replace", "path": "/total_amount", "value": "1800.00" },
-    { "op": "replace", "path": "/due_date", "value": "2026-08-01" }
-  ],
-  "processedAt": "2026-07-01T10:20:00Z"
+  "versionNumber": 2
 }
 ```
 
-| Field | Description |
-|---|---|
-| `documentId` | Stable document identifier |
-| `versionNumber` | Version number of this upload |
-| `tenantId` | Tenant resolved from the JWT — never supplied by the client |
-| `documentType` | Document type used for extraction |
-| `status` | `COMPLETED` — extraction succeeded; `DUPLICATE` — same content as previous version, no re-extraction |
-| `fields` | Extracted fields. Absent when `status` is `DUPLICATE` — refer to the previous version |
-| `diffFromPrevious` | JSON Patch (RFC 6902) diff of `fields` against the previous version. Absent for v1 or when `DUPLICATE` |
-| `processedAt` | UTC timestamp of when processing completed |
+The extraction result is not included in this response. Poll `GET /documents/{documentId}/versions/{versionNumber}` until `status` is no longer `PENDING`.
 
 **Error responses**
 
@@ -139,8 +114,6 @@ Content-Type: application/json
 | `401 Unauthorized` | Missing or invalid JWT, or `tenantId` claim absent |
 | `400 Bad Request` | Missing required fields or `s3Key` does not match expected pattern |
 | `403 Forbidden` | `s3Key` prefix does not match the authenticated tenant |
-| `409 Conflict` | GuardDuty scan not yet complete — client should retry with backoff |
-| `422 Unprocessable Entity` | File tagged `THREATS_FOUND` or `UNSCANNABLE` by GuardDuty |
 
 ---
 
@@ -293,11 +266,13 @@ The `fields` object in the `POST /documents/process` response contains different
     2. PUT {uploadUrl}  (direct S3 — bypasses Lambda)
        → 200 OK from S3
 
-    3. Wait a few seconds for GuardDuty to scan
+    3. POST /documents/process  { documentId, versionNumber: 1, s3Key, documentType }
+       → 202 Accepted
 
-    4. POST /documents/process  { documentId, versionNumber: 1, s3Key, documentType }
-       → receive { status: "COMPLETED", fields, versionNumber: 1 }
-       → if 409, retry with backoff
+    4. poll GET /documents/{documentId}/versions/1
+       until status ≠ "PENDING"
+       → COMPLETED : fields available
+       → REJECTED  : file flagged by GuardDuty
     ```
 
 === "New version of existing document"
@@ -309,16 +284,18 @@ The `fields` object in the `POST /documents/process` response contains different
     2. PUT {uploadUrl}  (direct S3 — bypasses Lambda)
        → 200 OK from S3
 
-    3. Wait a few seconds for GuardDuty to scan
+    3. POST /documents/process  { documentId, versionNumber: 2, s3Key, documentType }
+       → 202 Accepted
 
-    4. POST /documents/process  { documentId, versionNumber: 2, s3Key, documentType }
-       → receive { status: "COMPLETED", fields, diffFromPrevious, versionNumber: 2 }
-       → if status "DUPLICATE", content unchanged — refer to previous version
-       → if 409, retry with backoff
+    4. poll GET /documents/{documentId}/versions/2
+       until status ≠ "PENDING"
+       → COMPLETED  : fields and diffFromPrevious available
+       → DUPLICATE  : content unchanged — refer to previous version
+       → REJECTED   : file flagged by GuardDuty
     ```
 
-!!! warning "409 retry behaviour"
-    A `409 Conflict` means the GuardDuty scan has not yet completed. Implement an exponential backoff retry — typically the scan finishes within 5–15 seconds. Do not poll more than a few times; if the scan does not complete within a reasonable window, surface an error to the user.
+!!! tip "Polling strategy"
+    Start polling after 2 seconds. Back off to 5-second intervals after 10 seconds. Cap at 10-second intervals. Surface an error to the user if status remains `PENDING` after 5 minutes — this indicates a worker failure; check the SQS DLQ.
 
 ---
 

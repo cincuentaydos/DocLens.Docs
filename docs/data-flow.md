@@ -7,13 +7,14 @@ The complete flow from a client uploading a document to receiving extraction res
 ```mermaid
 sequenceDiagram
     participant C as Tenant Client
-    participant GW as API Gateway + Lambda
+    participant GW as API Gateway + Intake Lambda
     participant S3 as Amazon S3
     participant GD as GuardDuty
+    participant SQ as SQS
+    participant WK as Worker Lambda
     participant TX as Textract
     participant BD as Bedrock / Claude
     participant DB as DynamoDB
-    participant SQ as SQS
 
     C->>GW: POST /documents/prepare (JWT)
     GW->>GW: validate tenantId claim
@@ -27,27 +28,36 @@ sequenceDiagram
     GD->>S3: tag object (CLEAN / THREATS_FOUND / UNSCANNABLE)
 
     C->>GW: POST /documents/process
-    GW->>S3: GetObjectTagging
+    GW->>SQ: enqueue processing job
+    GW-->>C: 202 Accepted
+
+    loop poll until status ≠ PENDING
+        C->>GW: GET /documents/{id}/versions/{n}
+        GW->>DB: read version record
+        GW-->>C: { status: PENDING | COMPLETED | DUPLICATE | REJECTED }
+    end
+
+    SQ->>WK: consume message
+    WK->>S3: GetObjectTagging
 
     alt THREATS_FOUND or UNSCANNABLE
-        GW-->>C: 422 Unprocessable Entity
+        WK->>DB: write REJECTED record
     else tag absent — scan still running
-        GW-->>C: 409 Conflict (retry with backoff)
+        WK->>SQ: visibility timeout expires — retry
     else CLEAN
-        GW->>TX: ExtractTextAsync
-        TX-->>GW: raw text
-        GW->>BD: InvokeModel (Claude)
-        BD-->>GW: structured fields
-        GW->>GW: compute SHA-256 of PDF bytes
-        GW->>DB: check SHA vs latest version
+        WK->>WK: compute SHA-256 of PDF bytes
+        WK->>DB: check SHA vs latest version
         alt SHA matches — duplicate
-            GW-->>C: 200 OK { status: DUPLICATE, versionNumber }
+            WK->>DB: write DUPLICATE record
         else new content
-            GW->>DB: fetch previous version fields
-            GW->>GW: compute JSON Patch diff
-            GW->>DB: write COMPLETED + fields + diff
-            GW->>SQ: publish ExtractionCompleted
-            GW-->>C: 200 OK { documentId, versionNumber, fields, diffFromPrevious }
+            WK->>TX: ExtractTextAsync
+            TX-->>WK: raw text
+            WK->>BD: InvokeModel (Claude)
+            BD-->>WK: structured fields
+            WK->>DB: fetch previous version fields
+            WK->>WK: compute JSON Patch diff
+            WK->>DB: write COMPLETED + fields + diff
+            WK->>SQ: publish ExtractionCompleted (notifications queue)
         end
     end
 ```
@@ -87,19 +97,34 @@ flowchart TD
 
 ---
 
-## Step 3 — Process (`POST /documents/process`)
+## Step 3 — Process (`POST /documents/process` + Worker Lambda)
+
+`POST /documents/process` is handled by the **intake Lambda** — it enqueues a job and returns `202 Accepted` immediately. The **worker Lambda** consumes the SQS message and performs all extraction logic.
+
+**Intake Lambda:**
 
 ```mermaid
 flowchart TD
-    A["POST /documents/process"] --> B["S3:GetObjectTagging"]
+    A["POST /documents/process"] --> B["Validate request\n(documentId, versionNumber, s3Key, documentType)"]
+    B --> C["Validate s3Key prefix\nmatches authenticated tenantId"]
+    C -->|mismatch| D["403 Forbidden"]
+    C -->|valid| E["Enqueue message to SQS\n(documentId, versionNumber, s3Key, tenantId, documentType)"]
+    E --> F["202 Accepted"]
+```
+
+**Worker Lambda (SQS consumer):**
+
+```mermaid
+flowchart TD
+    A["SQS message consumed\nby Worker Lambda"] --> B["S3:GetObjectTagging"]
     B --> C{GuardDutyMalwareScanStatus}
 
-    C -->|THREATS_FOUND| D["422 Unprocessable Entity"]
+    C -->|THREATS_FOUND| D["Write REJECTED record\nno retry"]
     C -->|UNSCANNABLE| D
-    C -->|tag absent| E["409 Conflict\nscan pending — retry with backoff"]
+    C -->|tag absent| E["Throw exception\nSQS visibility timeout → retry"]
     C -->|CLEAN| F["Compute SHA-256\nof PDF bytes from S3"]
     F --> G{SHA matches\nlatest version?}
-    G -->|Yes — duplicate| H["Write DUPLICATE record\n200 OK { status: DUPLICATE, versionNumber }"]
+    G -->|Yes — duplicate| H["Write DUPLICATE record"]
     G -->|No — new content| I["IOcrService.ExtractTextAsync"]
 
     I --> J{PdfPig result}
@@ -112,9 +137,8 @@ flowchart TD
     N -->|No — v1| O["Write COMPLETED record\nfields only · no diff"]
     N -->|Yes| P["Compute JSON Patch diff\nfields v_prev → fields v_new"]
     P --> Q["Write COMPLETED record\nfields + diffFromPrevious"]
-    O --> R["Publish ExtractionCompleted to SQS"]
+    O --> R["Publish ExtractionCompleted\nto notifications SQS queue"]
     Q --> R
-    R --> S["200 OK\n{ documentId · versionNumber · fields · diffFromPrevious }"]
 ```
 
 > See [ADR-003](adrs/003-ocr-strategy.md) for the OCR hybrid fast path rationale.

@@ -1,6 +1,6 @@
 # DocLens.Lambda
 
-Core Lambda function. Receives document processing requests via API Gateway (HTTP API v2), runs OCR, performs semantic analysis through Bedrock, and returns structured data.
+Core backend. Composed of two Lambda functions: an **intake Lambda** that handles API Gateway requests and enqueues jobs, and a **worker Lambda** that consumes SQS messages and performs OCR + semantic extraction.
 
 **Repository:** [`DocLens.Lambda.Template`](https://github.com/cincuentaydos/DocLens.Lambda.Template)
 
@@ -49,20 +49,33 @@ app.MapDocumentEndpoints();
 
 ## Request Flow
 
+**Intake Lambda** (API Gateway → SQS):
+
 ```
 API Gateway → TenantMiddleware → DocumentEndpoints
-                                    → DocumentExtractionService
-                                        ├── TextractOcrService      (raw text)
-                                        └── BedrockSemanticAnalysis (structured fields)
+                                    → DocumentExtractionService.EnqueueAsync
+                                        └── SQS.SendMessage → 202 Accepted
+```
+
+**Worker Lambda** (SQS consumer):
+
+```
+SQS → WorkerHandler
+         → GuardDuty tag gate (S3:GetObjectTagging)
+         → DocumentExtractionService.ExtractAsync
+              ├── TextractOcrService      (raw text)
+              └── BedrockSemanticAnalysis (structured fields)
+         → DynamoDB write (COMPLETED / DUPLICATE / REJECTED)
+         → SQS notifications queue (ExtractionCompleted)
 ```
 
 ## Key Services
 
 | Service | Interface | Purpose |
 |---|---|---|
-| `DocumentExtractionService` | `IDocumentExtractionService` | Orchestrates OCR + semantic analysis |
-| `TextractOcrService` | `IOcrService` | Calls Textract to extract raw text from S3 document |
-| `BedrockSemanticAnalysisService` | `ISemanticAnalysisService` | Calls Bedrock/Claude to extract typed fields from raw text |
+| `DocumentExtractionService` | `IDocumentExtractionService` | Intake: enqueues processing job to SQS. Worker: orchestrates GuardDuty gate, OCR, semantic analysis, and DynamoDB write |
+| `TextractOcrService` | `IOcrService` | Calls Textract to extract raw text from S3 document (worker Lambda only) |
+| `BedrockSemanticAnalysisService` | `ISemanticAnalysisService` | Calls Bedrock/Claude to extract typed fields from raw text (worker Lambda only) |
 
 ## Multi-Tenant Rule
 
@@ -70,7 +83,7 @@ Every service that touches data **must** receive `ITenantContext` via constructo
 
 | Layer | Key |
 |---|---|
-| S3 | `{tenantId}/{year}/{month}/{documentId}.pdf` |
+| S3 | `{tenantId}/documents/{documentId}/v{versionNumber}.pdf` |
 | DynamoDB | `TENANT#{tenantId}` |
 | Logs | Structured field `TenantId` on every entry |
 

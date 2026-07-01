@@ -180,7 +180,7 @@ If the upload is a duplicate (SHA matches latest version), `status` is `DUPLICAT
 
 ```mermaid
 flowchart TD
-    A["POST /documents/process\nnew version upload"] --> B["GuardDuty scan gate\nsame as current flow"]
+    A["SQS message consumed\nby Worker Lambda"] --> B["GuardDuty scan gate\n(see ADR-004)"]
     B --> C["Compute SHA-256\nof PDF bytes from S3"]
     C --> D{SHA matches\nlatest version?}
     D -->|Yes — duplicate| E["Write DUPLICATE record\nReturn existing fields"]

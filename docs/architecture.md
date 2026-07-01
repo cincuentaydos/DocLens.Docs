@@ -62,8 +62,8 @@ DocLens uses a **logical silo** approach: all tenants share the same infrastruct
 - **Inside-out design:** core extraction logic is built first; infrastructure wiring is added second.
 - **Interface + implementation pairs:** every service has an interface (`IOcrService`, `ISemanticAnalysisService`, `IDocumentExtractionService`) to enable mocking in tests and future substitution.
 - **Scoped services, singleton AWS clients:** services are registered as `Scoped`; AWS SDK clients are `Singleton` via `AddAWSService<T>`.
-- **Synchronous extraction (current):** Textract + Bedrock are called inline within the Lambda invocation. Async job queue will be added when latency or throughput require it.
-- **SQS as notifier only:** not used as a processing trigger — only for post-extraction notifications (e.g., email).
+- **Asynchronous extraction (event-driven):** `POST /documents/process` enqueues a job to SQS and returns `202 Accepted` immediately. A separate worker Lambda performs Textract + Bedrock extraction without API Gateway timeout pressure. The client polls `GET /documents/{id}/versions/{n}` for the result.
+- **SQS as processing backbone:** the SQS queue decouples intake from extraction and provides retry isolation via a dead-letter queue. A second SQS queue is used for post-extraction notifications (e.g., email).
 
 ## OCR Strategy — Hybrid Fast Path
 
@@ -90,8 +90,9 @@ Clients upload documents directly to S3 using a short-lived pre-signed PUT URL, 
 
 1. Client calls `POST /documents/prepare` — optionally passes an existing `documentId` to create a new version; receives `{ documentId, versionNumber, uploadUrl }`.
 2. Client PUTs the file directly to S3 using `uploadUrl` (15-minute TTL, `application/pdf` only).
-3. GuardDuty scans the object and tags it with the scan result.
-4. Client calls `POST /documents/process` — Lambda reads the scan tag, computes SHA-256, runs extraction, and stores the diff against the previous version.
+3. Client calls `POST /documents/process` — intake Lambda enqueues a job to SQS and returns `202 Accepted` immediately.
+4. Worker Lambda consumes the SQS message — handles the GuardDuty gate internally, computes SHA-256, runs extraction, and stores the diff against the previous version.
+5. Client polls `GET /documents/{documentId}/versions/{versionNumber}` until status is no longer `PENDING`.
 
 ## Malware Scanning — GuardDuty
 
