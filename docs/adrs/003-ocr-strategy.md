@@ -54,7 +54,7 @@ For multi-page documents, Textract runs as an asynchronous job (`StartDocumentTe
 **Weaknesses**
 
 - Cost — charged per page; significant at scale, especially for multi-page contracts or bulk batches.
-- Asynchronous for multi-page documents — adds latency and requires polling or SNS/SQS callback.
+- Asynchronous for multi-page documents — `StartDocumentTextDetection` adds latency and requires internal polling or SNS/SQS callback. This is no longer a blocking concern: the worker Lambda (see [ADR-006](006-sync-vs-async-processing.md)) runs outside the API Gateway timeout and can absorb Textract async job polling internally.
 - Cold latency — even synchronous calls add hundreds of milliseconds.
 - Vendor lock-in — Textract is AWS-specific; migrating away requires replacing the OCR layer.
 - Overkill for digital PDFs — running OCR on a PDF with embedded text adds cost and latency with no quality gain.
@@ -94,4 +94,5 @@ This approach keeps the majority of processing fast and free, reserves Textract 
 
 - What proportion of uploaded documents are expected to be scanned vs. digital? This directly affects how often Textract will be invoked and the cost projection.
 - Should `AnalyzeDocument` (tables/forms) be used instead of `DetectDocumentText` for invoice processing?
-- For multi-page documents, should Textract's async job flow be implemented immediately, or deferred until the async processing pipeline is in place?
+- For multi-page documents, should Textract's async job flow (`StartDocumentTextDetection`) be used instead of the synchronous `DetectDocumentText`? The async processing pipeline (ADR-006) is now in place, so this is viable — decision depends on whether multi-page scanned documents become a primary use case.
+- Should `AnalyzeDocument` (tables/forms) be used instead of `DetectDocumentText` for invoice and contract processing to improve field extraction accuracy?
