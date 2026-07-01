@@ -70,7 +70,30 @@ The frontend calls a lightweight backend endpoint (`POST /documents/prepare`) th
 
 ---
 
+## Diagram — Option 1 vs. Option 2
+
+```mermaid
+flowchart LR
+    subgraph O1["Option 1 — Backend Proxy (rejected)"]
+        direction LR
+        A1["Client"] -->|"POST multipart/form-data\nfull file bytes"| B1["API Gateway"]
+        B1 --> C1["Lambda\nbuffers entire file in memory"]
+        C1 -->|"S3:PutObject"| D1[("S3")]
+    end
+
+    subgraph O2["Option 2 — Pre-signed PUT URL (chosen)"]
+        direction LR
+        A2["Client"] -->|"1. POST /documents/prepare"| B2["Lambda\ngenerates pre-signed URL\nLambda never touches file bytes"]
+        B2 -->|"2. { uploadUrl, documentId }"| A2
+        A2 -->|"3. PUT file bytes\ndirect to S3, bypasses Lambda"| D2[("S3")]
+    end
+```
+
+---
+
 ## Chosen Approach
+
+**Option 2 — Pre-signed PUT URL** is the selected approach, for the reasons in the [Comparison](#comparison) table above: no payload ceiling, no Lambda memory pressure, lower data-transfer cost, and tenant isolation enforced at URL-generation time rather than inside the request handler.
 
 `POST /documents/prepare` is the single backend call required before upload. It:
 

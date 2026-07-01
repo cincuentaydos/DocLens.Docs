@@ -86,18 +86,49 @@ GET /documents/{documentId}/versions/{versionNumber}
 
 ---
 
+### Option 3 — Fully Event-Driven: S3 → SQS directly *(proposed — under discussion, not yet decided)*
+
+Raised while reviewing ADR-005: instead of the client calling `POST /documents/process` to enqueue the job, an **S3 Event Notification** (`s3:ObjectCreated:Put`, filtered by suffix `.pdf`) publishes directly to the SQS queue the moment the pre-signed PUT completes. The worker Lambda is unchanged — it reads `documentType` from the `PENDING` DynamoDB record (looked up via `tenantId`/`documentId` parsed from the S3 key) instead of receiving it in a request body. The intake Lambda's `/process` endpoint is removed entirely; the client never calls it.
+
+```
+1. POST /documents/prepare      → { documentId, versionNumber, uploadUrl }
+2. PUT {uploadUrl}               → 200 OK (direct S3)
+3. S3 ObjectCreated:Put event    → SQS (no client call, no intake Lambda)
+4. Worker Lambda consumes message
+   → GuardDuty gate (tag usually absent on first attempt — SQS retries as today)
+   → SHA-256 check → Textract + Bedrock → writes COMPLETED / DUPLICATE / REJECTED
+5. Client polls GET /documents/{id}/versions/{n}
+```
+
+**Strengths**
+
+- One fewer client round trip — upload alone is sufficient to trigger processing.
+- Removes the intake Lambda / `/process` endpoint entirely — less code to own.
+- Eliminates the "abandoned `PENDING` record" open question from [ADR-005](005-upload-strategy.md#open-questions) — there is no window where an upload completes but processing is never triggered.
+- `tenantId` is already embedded in the S3 key (set server-side at `prepare` time) and `documentType` is already in the `PENDING` record — no data is lost by removing the request body.
+- Duplicate or retried S3 events are already safe — the SHA-256 check ([ADR-007](007-document-versioning.md)) treats re-processing the same content as `DUPLICATE`.
+
+**Weaknesses**
+
+- GuardDuty tag-absent-on-first-attempt becomes the **common** case instead of the exception — the scan has barely started when the S3 event fires. Today, the client's extra round trip to call `/process` incidentally gives the scan a head start.
+- The S3 Event Notification must be suffix-filtered to `*.pdf` — the companion `{documentId}.pdf.metadata.json` file (written for RAG ingestion) must not also trigger the worker.
+- Loses the explicit client-side "commit" signal — no way for the client to delay or batch-trigger processing after uploading multiple files. Not a known requirement today, but worth confirming with the team.
+- No request/response tied to the act of starting processing — client already has `documentId` from `prepare()`, so this is mostly cosmetic, but removes a natural place to fail fast on a malformed request.
+
+---
+
 ## Comparison
 
-| Dimension | Synchronous | Asynchronous (chosen) |
-|---|---|---|
-| Client complexity | Low (one request) | Low (202 + status polling) |
-| API Gateway timeout | Hard 29s limit — unworkable for scanned PDFs | Not applicable |
-| GuardDuty polling | Client-side (409 + backoff) | Internal to worker Lambda |
-| Large scanned PDFs | Risk of 504 | Fully supported |
-| Retry isolation | None | SQS DLQ |
-| Infrastructure | Minimal | Queue + DLQ + worker Lambda |
-| Observability | Single trace | Multi-invocation (X-Ray correlation) |
-| Robustness | Low — lost results on timeout | High — no silent failures |
+| Dimension | Synchronous | Asynchronous (chosen) | Event-driven, no `/process` (proposed) |
+|---|---|---|---|
+| Client complexity | Low (one request) | Low (202 + status polling) | Lowest (upload + polling only) |
+| API Gateway timeout | Hard 29s limit — unworkable for scanned PDFs | Not applicable | Not applicable |
+| GuardDuty polling | Client-side (409 + backoff) | Internal to worker Lambda | Internal to worker Lambda (tag-absent retry is now the common path, not the exception) |
+| Large scanned PDFs | Risk of 504 | Fully supported | Fully supported |
+| Retry isolation | None | SQS DLQ | SQS DLQ |
+| Infrastructure | Minimal | Queue + DLQ + worker Lambda | Queue + DLQ + worker Lambda, **no intake Lambda** |
+| Observability | Single trace | Multi-invocation (X-Ray correlation) | Multi-invocation; no client-initiated span to correlate against |
+| Robustness | Low — lost results on timeout | High — no silent failures | High — no silent failures, and no abandoned `PENDING` records |
 
 ---
 
@@ -157,3 +188,9 @@ The `IDocumentExtractionService` interface isolates the extraction logic from th
 - **IAM:** intake Lambda needs `sqs:SendMessage`; worker Lambda needs `sqs:ReceiveMessage`, `sqs:DeleteMessage`, `sqs:GetQueueAttributes`.
 - **Observability:** AWS X-Ray trace IDs must be propagated through the SQS message attributes to correlate intake and worker invocations in a single trace.
 - **Frontend:** polling interval recommendation — start at 2s, back off to 5s after 10s, cap at 10s. Surface an error to the user after 5 minutes without a terminal status.
+
+---
+
+## Open Questions
+
+- **Pending team discussion:** should `POST /documents/process` be removed in favor of the fully event-driven trigger described in [Option 3](#option-3--fully-event-driven-s3--sqs-directly-proposed--under-discussion-not-yet-decided) (S3 Event Notification → SQS directly)? This would remove the intake Lambda's `/process` endpoint and resolve the "abandoned `PENDING` record" open question in ADR-005, at the cost of making the GuardDuty tag-absent retry path the common case instead of the exception.
