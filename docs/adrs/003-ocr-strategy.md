@@ -1,4 +1,4 @@
-# ADR-003 — OCR Strategy
+# ADR-003 — Text Extraction Strategy
 
 **Status:** Recommended approach documented — implementation pending
 
@@ -6,13 +6,23 @@
 
 ## Decision
 
-**Hybrid fast path: PdfPig first, Amazon Textract as fallback.**
+**Route by input format — there is no single extraction strategy.**
+
+- **PDF:** hybrid fast path — PdfPig first, Amazon Textract as fallback for scanned pages.
+- **Native-text formats** (Markdown, DOCX, PPTX, XLSX, plain text): parse directly. No OCR involved — the text is already structured data, not pixels.
+- **Loose images** (PNG, JPEG, TIFF): straight to Amazon Textract — there is no "digital" fast path for a standalone image.
+
+Amazon Textract is reserved exclusively for image-based content. It is never used for formats where the text already exists as structured data — it doesn't support them anyway (see [Amazon Textract](#amazon-textract) below).
 
 ## Context
 
-DocLens processes documents uploaded by tenants — invoices, contracts, reports, and CVs. Before semantic analysis can run via Amazon Bedrock, raw text must be extracted from those documents.
+DocLens's intended scope is flexible support for standard documentation formats — Markdown, PDF, DOCX, and others — not PDF only. (Earlier drafts of this ADR, and the current implementation, only considered PDF; that was a scoping gap, not a deliberate exclusion.) Before semantic analysis can run via Amazon Bedrock, raw text must be extracted from whatever format the tenant uploaded.
 
-Two approaches are under consideration: **PdfPig** (direct PDF parsing) and **Amazon Textract** (cloud OCR).
+Three architecturally distinct extraction problems fall out of this:
+
+1. **PDF** may or may not have embedded text (digital vs. scanned) — this is the original problem this ADR solved.
+2. **Native-text containers** (`.md`, `.txt`, `.docx`, `.pptx`, `.xlsx`) already hold the text as structured data. There is nothing to "extract" via OCR or PDF parsing — the file just needs to be read with the parser appropriate to its format.
+3. **Loose images** (a scanned page uploaded as a standalone `.png`/`.jpg` rather than wrapped in a PDF) have no structured text at all — OCR is the only option.
 
 ---
 
@@ -57,42 +67,76 @@ For multi-page documents, Textract runs as an asynchronous job (`StartDocumentTe
 - Asynchronous for multi-page documents — `StartDocumentTextDetection` adds latency and requires internal polling or SNS/SQS callback. This is no longer a blocking concern: the worker Lambda (see [ADR-006](006-sync-vs-async-processing.md)) runs outside the API Gateway timeout and can absorb Textract async job polling internally.
 - Cold latency — even synchronous calls add hundreds of milliseconds.
 - Vendor lock-in — Textract is AWS-specific; migrating away requires replacing the OCR layer.
-- Overkill for digital PDFs — running OCR on a PDF with embedded text adds cost and latency with no quality gain.
+- Overkill for digital PDFs — running OCR on a PDF with embedded text adds cost and latency with no quality gain. Textract always rasterizes the page and runs computer vision on it — it never checks whether the source already has an embedded text layer, so it re-discovers text that PdfPig could have read for free.
+- **No native-text format support.** Textract's input formats are limited to `PDF`, `PNG`, `JPEG`, and `TIFF` — it does not accept `.docx`, `.pptx`, `.xlsx`, `.md`, or `.txt` under any circumstances. It is a computer-vision service; it needs pixels to run its model on. These formats must be parsed directly (see [Native-Text Extraction](#native-text-extraction-markdown-docx-pptx-xlsx-plain-text) below) — Textract cannot be pointed at them regardless of whether their content happens to be a scanned image.
+
+---
+
+## Native-Text Extraction (Markdown, DOCX, PPTX, XLSX, Plain Text)
+
+These formats already store text as structured data — the extraction step is a parse, not an OCR problem. Two sub-cases:
+
+**Plain text (`.md`, `.txt`)**
+
+Decode the file bytes as UTF-8. No library, no parsing logic — the content *is* the text. Markdown syntax (`#`, `**`, `-`) is left as-is; it is cheap, useful signal for Bedrock's prompt (headings and lists carry structure) rather than noise to strip.
+
+**OOXML containers (`.docx`, `.pptx`, `.xlsx`)**
+
+These are ZIP archives of XML parts (Office Open XML). Reading them requires a real parser — [`DocumentFormat.OpenXml`](https://www.nuget.org/packages/DocumentFormat.OpenXml) (Microsoft's official .NET/NuGet package for OOXML, MIT-licensed, no network dependency) walks the document XML and returns paragraph/cell/slide text directly. This is the OOXML equivalent of what PdfPig does for PDF — direct structural parsing, no rendering, no ML model.
+
+**This path never falls back to Textract.** A `.docx` does not have a "scanned" failure mode in normal use — the text is always present as structured XML. (The theoretical edge case of a single scanned image pasted in as the entire document body is out of scope for now; see Open Questions.)
+
+**Weaknesses**
+
+- Legacy binary `.doc` (pre-2007 Word format) is **not** covered by `DocumentFormat.OpenXml` — that library only reads OOXML (`.docx`/`.pptx`/`.xlsx`). Binary `.doc` needs a different tool (e.g., a conversion step via LibreOffice headless, or a commercial library like Aspose) or should be excluded from v1 scope. This is an open gap, not a solved case.
+- Layout is not preserved the way a human reader sees it — multi-column layouts, text boxes, and embedded tables in DOCX/PPTX require walking the OOXML structure deliberately, similar to PdfPig's limitation on complex PDF layouts.
 
 ---
 
 ## Comparison
 
-| Dimension | PdfPig | Amazon Textract |
-|---|---|---|
-| Cost | Free | Per-page pricing |
-| Latency | Milliseconds (in-process) | Hundreds of ms (sync) / seconds (async job) |
-| Scanned documents | No | Yes |
-| Digital PDFs | Yes | Yes (redundant) |
-| Structured extraction (tables, forms) | Limited | Yes (`AnalyzeDocument`) |
-| Async complexity | None | Required for multi-page |
-| AWS dependency | None | Yes |
-| Cold start impact | None | Network call required |
+| Dimension | PdfPig | Amazon Textract | Native-Text Parser (`DocumentFormat.OpenXml` / plain read) |
+|---|---|---|---|
+| Applies to | Digital PDF | Scanned PDF, PNG, JPEG, TIFF | `.md`, `.txt`, `.docx`, `.pptx`, `.xlsx` |
+| Cost | Free | Per-page pricing | Free |
+| Latency | Milliseconds (in-process) | Hundreds of ms (sync) / seconds (async job) | Milliseconds (in-process) |
+| Scanned/image content | No | Yes | Not applicable — format has no image variant |
+| Structured extraction (tables, forms) | Limited | Yes (`AnalyzeDocument`) | Yes, via OOXML structure (tables are XML elements) |
+| Async complexity | None | Required for multi-page | None |
+| AWS dependency | None | Yes | None |
+| Cold start impact | None | Network call required | None |
 
 ---
 
-## Recommended Approach: Hybrid Fast Path
+## Recommended Approach: Route by Format
 
 | Step | Action |
 |---|---|
-| 1 | Attempt PdfPig in-process text extraction from the PDF byte stream |
-| 2 | If extracted text < threshold (~50 characters) → document is image-based |
-| 3 | Fall back to Amazon Textract |
+| 1 | Detect input format from `Content-Type` / file extension at `POST /documents/prepare` time |
+| 2a | **PDF:** attempt PdfPig in-process extraction. If extracted text < threshold (~50 characters) → treat as image-based → fall back to Amazon Textract |
+| 2b | **Native-text** (`.md`, `.txt`, `.docx`, `.pptx`, `.xlsx`): parse directly — plain UTF-8 decode, or `DocumentFormat.OpenXml` for OOXML. Never touches PdfPig or Textract |
+| 2c | **Loose image** (`.png`, `.jpg`, `.tiff`): send directly to Amazon Textract — there is no faster path available |
 
-This approach keeps the majority of processing fast and free, reserves Textract for cases where it is genuinely needed, and keeps the `IOcrService` interface clean — the calling code does not need to know which path was taken.
+This keeps the majority of processing fast and free, reserves Textract for the cases where it is the only option (image-based content), and keeps the calling code decoupled from *how* a given format was read.
 
-**Threshold heuristic:** a simple character count is a reliable starting point. A scanned PDF yields zero or near-zero characters from PdfPig. A digital PDF with even one page of content yields hundreds. A threshold between 20 and 100 characters covers this distinction reliably.
+**Threshold heuristic (PDF path only):** a simple character count is a reliable starting point. A scanned PDF yields zero or near-zero characters from PdfPig. A digital PDF with even one page of content yields hundreds. A threshold between 20 and 100 characters covers this distinction reliably.
+
+---
+
+## Consequences
+
+- **`IOcrService` needs to become format-aware.** The current interface (see `architecture.md`) is shaped around a single PDF-in/text-out contract. It should evolve into something like `IContentExtractionService` with routing by detected format — this ADR only settles the extraction *strategy*; the interface/implementation change is a separate, tracked follow-up in the Lambda codebase, not yet done.
+- **`data-flow.md`'s Worker Lambda flowchart is PDF-only today** (`IOcrService.ExtractTextAsync` → PdfPig/Textract) and will need a matching update once the native-text and image-only paths are implemented.
+- **New NuGet dependency:** `DocumentFormat.OpenXml` for OOXML parsing.
+- **`POST /documents/prepare`** currently locks `Content-Type: application/pdf` on the pre-signed URL (see [ADR-005](005-upload-strategy.md)) — that constraint needs to be parameterized per the format being uploaded once native-text formats are accepted.
 
 ---
 
 ## Open Questions
 
-- What proportion of uploaded documents are expected to be scanned vs. digital? This directly affects how often Textract will be invoked and the cost projection.
-- Should `AnalyzeDocument` (tables/forms) be used instead of `DetectDocumentText` for invoice processing?
-- For multi-page documents, should Textract's async job flow (`StartDocumentTextDetection`) be used instead of the synchronous `DetectDocumentText`? The async processing pipeline (ADR-006) is now in place, so this is viable — decision depends on whether multi-page scanned documents become a primary use case.
+- What proportion of uploaded documents are expected to be scanned vs. digital PDF vs. native-text? This affects both the Textract cost projection and how much engineering effort the OOXML path deserves relative to the PDF path.
 - Should `AnalyzeDocument` (tables/forms) be used instead of `DetectDocumentText` for invoice and contract processing to improve field extraction accuracy?
+- For multi-page documents, should Textract's async job flow (`StartDocumentTextDetection`) be used instead of the synchronous `DetectDocumentText`? The async processing pipeline (ADR-006) is now in place, so this is viable — decision depends on whether multi-page scanned documents become a primary use case.
+- Is legacy binary `.doc` in scope for v1? If so, what handles it — LibreOffice headless conversion, a commercial library, or something else?
+- Should a scanned image embedded as the entire body of a `.docx`/`.pptx` be detected and routed to Textract, or is that explicitly out of scope?
+- Should the full list of supported formats (and the `contentType` parameter needed on `POST /documents/prepare`) be finalized here, in ADR-005, or in a new ADR dedicated to supported format scope?
