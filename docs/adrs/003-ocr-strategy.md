@@ -16,7 +16,7 @@ Amazon Textract is reserved exclusively for image-based content. It is never use
 
 ## Context
 
-DocLens's intended scope is flexible support for standard documentation formats — Markdown, PDF, DOCX, and others — not PDF only. (Earlier drafts of this ADR, and the current implementation, only considered PDF; that was a scoping gap, not a deliberate exclusion.) Before semantic analysis can run via Amazon Bedrock, raw text must be extracted from whatever format the tenant uploaded.
+DocLens's intended scope is flexible support for standard documentation formats — Markdown, PDF, DOCX, and others — not PDF only. Before semantic analysis can run via Amazon Bedrock, raw text must be extracted from whatever format the tenant uploaded.
 
 Three architecturally distinct extraction problems fall out of this:
 
