@@ -83,9 +83,11 @@ A single S3 key per document; S3 tracks the binary history automatically via ver
 ### S3
 
 ```
-{tenantId}/documents/{documentId}/v{versionNumber}.pdf
-{tenantId}/documents/{documentId}/v{versionNumber}.pdf.metadata.json
+{tenantId}/documents/{documentId}/v{versionNumber}.{ext}
+{tenantId}/documents/{documentId}/v{versionNumber}.{ext}.metadata.json
 ```
+
+`{ext}` is derived server-side from the upload's validated `contentType` — see the supported-formats allow-list in [ADR-005](005-upload-strategy.md#chosen-approach) (`.pdf`, `.md`, `.docx`, etc.), not assumed to be `.pdf`.
 
 ### DynamoDB
 
@@ -111,8 +113,9 @@ SK: DOCUMENT#{documentId}#VERSION#{zero-padded versionNumber}
 ─────────────────────────────────────
 documentId:      string
 versionNumber:   number
-s3Key:           string  ({tenantId}/documents/{documentId}/v{n}.pdf)
-sha256:          string  (hex-encoded SHA-256 of PDF bytes)
+contentType:     string  (validated MIME type — see ADR-005 supported-formats allow-list)
+s3Key:           string  ({tenantId}/documents/{documentId}/v{n}.{ext})
+sha256:          string  (hex-encoded SHA-256 of the uploaded file's bytes)
 status:          PENDING | COMPLETED | REJECTED | DUPLICATE
 fields:          map<string, string>  (extracted fields — absent if PENDING/REJECTED/DUPLICATE)
 diffFromPrevious: JSON Patch array    (absent for v1 or if DUPLICATE)

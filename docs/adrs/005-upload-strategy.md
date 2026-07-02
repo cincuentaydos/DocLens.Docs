@@ -45,7 +45,7 @@ The frontend calls a lightweight backend endpoint (`POST /documents/prepare`) th
 
 - **No payload limit:** S3 supports objects up to 5 TB; the Lambda never buffers the file.
 - **Cost:** data transfer goes client → S3 directly; Lambda is only invoked for the short metadata call.
-- **Tenant isolation enforced at URL generation:** the backend controls the S3 key (`{tenantId}/documents/{documentId}/v{versionNumber}.pdf`), the allowed content type, and the URL TTL. The client cannot deviate from these constraints.
+- **Tenant isolation enforced at URL generation:** the backend controls the S3 key (`{tenantId}/documents/{documentId}/v{versionNumber}.{ext}`), the allowed content type, and the URL TTL. The client cannot deviate from these constraints.
 - **Decoupled concerns:** the Lambda handles auth and metadata; S3 handles storage. Each does what it is designed for.
 - **Standard pattern** for S3 uploads in serverless architectures; well-understood by frontend teams.
 
@@ -53,7 +53,7 @@ The frontend calls a lightweight backend endpoint (`POST /documents/prepare`) th
 
 - Slightly more complex client implementation — two requests instead of one (prepare + PUT).
 - The pre-signed URL must be treated as a secret; if intercepted within its TTL, it can be used to upload arbitrary content to that specific key. Mitigated by short TTL and HTTPS.
-- File type and size validation cannot happen synchronously before the upload (only after, via S3 metadata or scan results).
+- File **size** validation cannot happen synchronously before the upload (only after, via S3 metadata) — but format is now checked synchronously: `prepare` validates `contentType` against the supported-formats allow-list (see [Chosen Approach](#chosen-approach)) before issuing a URL, so an unsupported format never reaches S3 at all.
 
 ---
 
@@ -98,22 +98,39 @@ flowchart LR
 `POST /documents/prepare` is the single backend call required before upload. It:
 
 1. Validates the authenticated tenant (via `TenantMiddleware` — `tenantId` from Cognito JWT).
-2. Generates a `documentId` (GUID) if not provided, or validates the supplied `documentId` belongs to the authenticated tenant.
-3. Determines `versionNumber` — `1` for new documents, `latestVersion + 1` for subsequent versions.
-4. Constructs the S3 key: `{tenantId}/documents/{documentId}/v{versionNumber}.pdf`.
-5. Creates a pre-signed PUT URL scoped to that exact key, with a **15-minute TTL** and `Content-Type: application/pdf` constraint.
-6. Writes a `PENDING` version record to DynamoDB (`PK: TENANT#{tenantId}`, `SK: DOCUMENT#{documentId}#VERSION#{versionNumber}`).
-7. Returns `{ documentId, versionNumber, uploadUrl, expiresAt }`.
+2. Validates the request's `contentType` against the supported-formats allow-list below. Unsupported formats are rejected with `400 Bad Request` **at this step** — before any pre-signed URL is generated, and before the client uploads a single byte.
+3. Generates a `documentId` (GUID) if not provided, or validates the supplied `documentId` belongs to the authenticated tenant.
+4. Determines `versionNumber` — `1` for new documents, `latestVersion + 1` for subsequent versions.
+5. Constructs the S3 key using the extension mapped from the validated `contentType`: `{tenantId}/documents/{documentId}/v{versionNumber}.{ext}`.
+6. Creates a pre-signed PUT URL scoped to that exact key, with a **15-minute TTL** and a `Content-Type` constraint matching the validated value.
+7. Writes a `PENDING` version record to DynamoDB (`PK: TENANT#{tenantId}`, `SK: DOCUMENT#{documentId}#VERSION#{versionNumber}`), including the stored `contentType` — the worker Lambda needs it to route extraction (see [ADR-003](003-ocr-strategy.md)).
+8. Returns `{ documentId, versionNumber, uploadUrl, expiresAt }`.
 
-The frontend PUTs the file directly to `uploadUrl`. Once the PUT completes, the frontend calls `POST /documents/process` with the `documentId`, `versionNumber`, and `s3Key` — the intake Lambda enqueues a job and returns `202 Accepted` immediately. The worker Lambda then handles the GuardDuty gate internally (see [ADR-004](004-malware-scanning.md)) before invoking Textract and Bedrock. The client polls `GET /documents/{documentId}/versions/{versionNumber}` for the result.
+The frontend PUTs the file directly to `uploadUrl`. Once the PUT completes, the frontend calls `POST /documents/process` with the `documentId`, `versionNumber`, and `s3Key` — the intake Lambda enqueues a job and returns `202 Accepted` immediately. The worker Lambda then handles the GuardDuty gate internally (see [ADR-004](004-malware-scanning.md)) before routing to the correct extraction path (see [ADR-003](003-ocr-strategy.md)). The client polls `GET /documents/{documentId}/versions/{versionNumber}` for the result.
 
 **S3 key convention:**
 
 ```
-{tenantId}/documents/{documentId}/v{versionNumber}.pdf
+{tenantId}/documents/{documentId}/v{versionNumber}.{ext}
 ```
 
-This convention (adopted in [ADR-007](007-document-versioning.md)) makes every version independently addressable, scopes all S3 policies and lifecycle rules per tenant, and supports per-version lifecycle management without relying on S3 native versioning.
+`{ext}` is derived server-side from the validated `contentType` — never taken directly from a client-supplied filename — so the extension on the S3 key is always trustworthy. This convention (adopted in [ADR-007](007-document-versioning.md)) makes every version independently addressable, scopes all S3 policies and lifecycle rules per tenant, and supports per-version lifecycle management without relying on S3 native versioning.
+
+**Supported formats (allow-list):**
+
+| Format | `contentType` (client-supplied) | S3 key `{ext}` | Extraction path ([ADR-003](003-ocr-strategy.md)) |
+|---|---|---|---|
+| PDF | `application/pdf` | `.pdf` | PdfPig → Amazon Textract fallback |
+| Markdown | `text/markdown` | `.md` | Direct UTF-8 read |
+| Plain text | `text/plain` | `.txt` | Direct UTF-8 read |
+| Word | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | `.docx` | `DocumentFormat.OpenXml` |
+| PowerPoint | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | `.pptx` | `DocumentFormat.OpenXml` |
+| Excel | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | `.xlsx` | `DocumentFormat.OpenXml` |
+| PNG image | `image/png` | `.png` | Amazon Textract (OCR only — no fast path) |
+| JPEG image | `image/jpeg` | `.jpg` | Amazon Textract (OCR only — no fast path) |
+| TIFF image | `image/tiff` | `.tiff` | Amazon Textract (OCR only — no fast path) |
+
+Legacy binary `.doc` (pre-2007 Word format) is **not** in this list — see the open question below.
 
 **Pre-signed URL constraints enforced by S3:**
 
@@ -121,10 +138,10 @@ This convention (adopted in [ADR-007](007-document-versioning.md)) makes every v
 |---|---|
 | TTL | 15 minutes |
 | HTTP method | PUT only |
-| Content-Type | `application/pdf` |
+| Content-Type | One value from the supported-formats table above, fixed per request |
 | Target key | Exact key — no wildcards |
 
-A client holding the pre-signed URL can only PUT a PDF to that specific key within 15 minutes. Any other operation (GET, DELETE, PUT to a different key) is rejected by S3 without involving the Lambda.
+A client holding the pre-signed URL can only PUT a file of the validated format to that specific key within 15 minutes. Any other operation (GET, DELETE, PUT to a different key, or a PUT with a mismatched Content-Type) is rejected by S3 without involving the Lambda.
 
 ---
 
@@ -134,12 +151,15 @@ A client holding the pre-signed URL can only PUT a PDF to that specific key with
 - **DynamoDB:** the `PENDING` version record written at prepare time allows the system to detect abandoned uploads (documents prepared but never processed) for cleanup. The group record is also created (or updated) at this point to track `latestVersion`.
 - **Frontend:** two-step flow — `POST /documents/prepare` then `PUT {uploadUrl}` then `POST /documents/process`. The PUT is a direct S3 call, not through API Gateway.
 - **CORS:** the S3 bucket must have a CORS policy allowing PUT from the frontend origin.
-- **Content-Type enforcement:** the `Content-Type: application/pdf` constraint on the pre-signed URL means non-PDF uploads are rejected by S3 before reaching the processing pipeline.
+- **Content-Type enforcement:** `contentType` is validated against the supported-formats allow-list at `prepare` time (rejected early, before upload) and then enforced again by S3 on the PUT itself via the pre-signed URL's Content-Type constraint — two independent checks of the same rule.
+- **DynamoDB schema:** the `PENDING` (and later `COMPLETED`/`DUPLICATE`/`REJECTED`) version record must store `contentType` alongside `documentType`, so the worker Lambda can route extraction (ADR-003) without re-deriving the format from the S3 key extension.
+- **`IContentExtractionService`:** this ADR's allow-list is the source of truth ADR-003's format router reads from — the two must be kept in sync if a format is added or removed.
 
 ---
 
 ## Open Questions
 
-- Should non-PDF formats (DOCX, PNG, JPEG) be supported? If so, `POST /documents/prepare` needs a `contentType` parameter and the pre-signed URL constraint must be parameterised accordingly.
+- Is legacy binary `.doc` in scope for v1? It's excluded from the current allow-list because there's no clean way to parse it (see [ADR-003](003-ocr-strategy.md#open-questions)).
 - What is the retention policy for `PENDING` records that are never followed by a `POST /documents/process` call (abandoned uploads)?
 - Should the pre-signed URL TTL be configurable per tenant (e.g., longer TTL for enterprise clients on slow connections)?
+- Should the supported-formats allow-list be configurable per tenant (e.g., an enterprise tenant that only ever sends PDFs vs. one that needs DOCX/XLSX), or is a single global allow-list sufficient for all tenants?

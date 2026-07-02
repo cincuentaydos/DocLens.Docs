@@ -122,15 +122,23 @@ flowchart TD
     C -->|THREATS_FOUND| D["Write REJECTED record\nno retry"]
     C -->|UNSCANNABLE| D
     C -->|tag absent| E["Throw exception\nSQS visibility timeout → retry"]
-    C -->|CLEAN| F["Compute SHA-256\nof PDF bytes from S3"]
+    C -->|CLEAN| F["Compute SHA-256\nof file bytes from S3"]
     F --> G{SHA matches\nlatest version?}
     G -->|Yes — duplicate| H["Write DUPLICATE record"]
-    G -->|No — new content| I["IOcrService.ExtractTextAsync"]
+    G -->|No — new content| I["IContentExtractionService.ExtractTextAsync\n(routes by detected format)"]
 
-    I --> J{PdfPig result}
-    J -->|"text > threshold\ndigital PDF"| K["Return raw text\nfree · milliseconds · no network call"]
-    J -->|"text < threshold\nscanned document"| L["TextractOcrService\nDetectDocumentText"]
+    I --> I2{Detected format}
+
+    I2 -->|PDF| J{PdfPig result}
+    J -->|"text > threshold\ndigital PDF"| K["Text ready\nfree · milliseconds · no network call"]
+    J -->|"text < threshold\nscanned document"| L["Amazon Textract\nDetectDocumentText"]
     L --> K
+
+    I2 -->|"Native text\n.md .txt .docx .pptx .xlsx"| K2["Direct parse\nUTF-8 read, or\nDocumentFormat.OpenXml for OOXML"]
+    K2 --> K
+
+    I2 -->|"Loose image\n.png .jpg .tiff"| L2["Amazon Textract\nDetectDocumentText"]
+    L2 --> K
 
     K --> M["ISemanticAnalysisService.AnalyzeAsync\nBuildPrompt → InvokeModel Claude → parse JSON"]
     M --> N{Previous\nversion exists?}
@@ -141,7 +149,7 @@ flowchart TD
     Q --> R
 ```
 
-> See [ADR-003](adrs/003-ocr-strategy.md) for the OCR hybrid fast path rationale.
+> See [ADR-003](adrs/003-ocr-strategy.md) for the text-extraction routing strategy (PDF hybrid fast path, native-text parsing, and image OCR).
 > See [ADR-006](adrs/006-sync-vs-async-processing.md) for the synchronous processing decision.
 
 ---
@@ -149,13 +157,15 @@ flowchart TD
 ## S3 Storage Convention
 
 ```
-s3://<bucket>/{tenantId}/documents/{documentId}/v{versionNumber}.pdf
+s3://<bucket>/{tenantId}/documents/{documentId}/v{versionNumber}.{ext}
 ```
+
+`{ext}` is derived server-side from the upload's validated `contentType` (`.pdf`, `.md`, `.docx`, `.png`, etc.) — see the supported-formats allow-list in [ADR-005](adrs/005-upload-strategy.md#chosen-approach). It is never assumed to be `.pdf`.
 
 For RAG ingestion, a companion metadata file is written alongside the document:
 
 ```
-s3://<bucket>/{tenantId}/documents/{documentId}/v{versionNumber}.pdf.metadata.json
+s3://<bucket>/{tenantId}/documents/{documentId}/v{versionNumber}.{ext}.metadata.json
 ```
 
 ```json
