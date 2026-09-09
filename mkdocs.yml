@@ -1,5 +1,5 @@
 site_name: DocLens
-site_description: Multi-tenant intelligent document extraction platform on AWS Serverless
+site_description: Plataforma de gestión de casos legales e IA multi-tenant sobre AWS Serverless
 site_url: https://cincuentaydos.github.io/DocLens.Docs
 repo_url: https://github.com/cincuentaydos/DocLens.Docs
 repo_name: cincuentaydos/DocLens.Docs
@@ -38,7 +38,7 @@ theme:
     - content.action.edit
   logo: assets/logo.png
   favicon: assets/logo.png
-  language: en
+  language: es
   icon:
     repo: fontawesome/brands/github
 
@@ -77,22 +77,28 @@ markdown_extensions:
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 nav:
-  - Home: index.md
-  - Overview: overview.md
-  - Architecture: architecture.md
-  - Data Flow: data-flow.md
-  - API Reference: api-reference.md
-  - Tenant Onboarding: tenant-onboarding.md
+  - Inicio: index.md
+  - Resumen: overview.md
+  - Arquitectura: architecture.md
+  - Flujo de Datos: data-flow.md
+  - Referencia de API: api-reference.md
+  - Alta de Tenants: tenant-onboarding.md
   - ADRs:
-    - ADR-001 — RAG Strategy: adrs/001-rag-strategy.md
-    - ADR-002 — IaC Strategy: adrs/002-iac-strategy.md
-    - ADR-003 — Text Extraction Strategy: adrs/003-ocr-strategy.md
-    - ADR-004 — Malware Scanning: adrs/004-malware-scanning.md
-    - ADR-005 — Upload Strategy: adrs/005-upload-strategy.md
-    - ADR-006 — Sync vs Async Processing: adrs/006-sync-vs-async-processing.md
-    - ADR-007 — Document Versioning: adrs/007-document-versioning.md
-    - IaC Comparison (CDK vs Terraform): adrs/iac-comparison.md
-  - Projects:
+    - ADR-001 — Estrategia de RAG: adrs/001-rag-strategy.md
+    - ADR-002 — Estrategia de IaC: adrs/002-iac-strategy.md
+    - ADR-003 — Estrategia de Extracción de Texto: adrs/003-ocr-strategy.md
+    - ADR-004 — Escaneo de Malware: adrs/004-malware-scanning.md
+    - ADR-005 — Estrategia de Subida: adrs/005-upload-strategy.md
+    - ADR-006 — Procesamiento Síncrono vs Asíncrono: adrs/006-sync-vs-async-processing.md
+    - ADR-007 — Versionado de Documentos: adrs/007-document-versioning.md
+    - ADR-008 — Estrategia de Almacenamiento de Datos: adrs/008-data-storage-strategy.md
+    - ADR-009 — Estrategia de Red y Edge: adrs/009-edge-network-strategy.md
+    - ADR-010 — Estrategia de Cómputo: adrs/010-compute-strategy.md
+    - ADR-011 — Disparo del Procesamiento de Documentos: adrs/011-document-processing-trigger.md
+    - ADR-012 — Sin Agente Autónomo: adrs/012-no-autonomous-agent.md
+    - ADR-013 — Recuperación ante Desastres: adrs/013-disaster-recovery-strategy.md
+    - Comparación de IaC (CDK vs Terraform): adrs/iac-comparison.md
+  - Proyectos:
     - DocLens.Lambda: projects/lambda.md
     - DocLens.Web.Template: projects/web-template.md
     - DocLens.Skills: projects/skills.md

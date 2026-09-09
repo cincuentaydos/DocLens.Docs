@@ -1,45 +1,57 @@
-# Overview
+# Resumen
 
-## What is DocLens?
+## ¿Qué es DocLens?
 
-DocLens is a **multi-tenant intelligent document extraction platform** running on AWS Serverless. Companies upload documents — invoices, contracts, reports, CVs — and receive structured data extracted automatically through a pipeline of OCR and semantic AI analysis.
+DocLens es una **plataforma de inteligencia artificial multi-tenant para la gestión de casos legales**, que corre sobre AWS Serverless. Un despacho de abogados (el tenant) centraliza de forma segura sus Procesos, Clientes y Documentos, y usa IA para reducir el trabajo manual: clasificación de documentos, extracción de datos relevantes, generación de resúmenes, consulta contextual de los casos, y elaboración de primeros borradores de documentos y comunicaciones.
 
-The platform is internally referred to as **Project 52**.
+La plataforma se conoce internamente como **Project 52**.
 
-## Purpose
+## Problema y Oportunidad
 
-| Goal | Detail |
+Un despacho de abogados en crecimiento dedica una parte significativa del tiempo de sus profesionales a tareas repetitivas y de bajo valor, lo que reduce su capacidad para centrarse en actividades estratégicas y dificulta la gestión eficiente de un volumen creciente de casos.
+
+DocLens reduce ese trabajo manual mediante IA, permitiendo que los profesionales dediquen más tiempo a la negociación, la estrategia jurídica, la relación con los clientes y la captación de nuevos negocios.
+
+## Propósito
+
+| Objetivo | Detalle |
 |---|---|
-| Automated extraction | No manual data entry — fields are extracted automatically from uploaded documents |
-| Multi-tenancy | Each company (tenant) has fully isolated data: separate S3 prefixes, DynamoDB partitions, and Knowledge Base filters |
-| AI-powered analysis | Amazon Bedrock (Claude) interprets raw text and returns typed, structured fields |
-| Serverless scale | AWS Lambda handles compute; no servers to manage |
+| Gestión centralizada de casos | Procesos, Clientes y Documentos organizados y buscables en un solo lugar |
+| Extracción automatizada | Clasificación y estructuración de la información contenida en documentos legales de distintos tipos y formatos |
+| Consulta contextual con IA | Los usuarios consultan el estado y el contenido de un proceso vía lenguaje natural, con fuentes citadas |
+| Redacción asistida | Amazon Bedrock (Claude) genera primeros borradores de documentos y comunicaciones a partir del contexto verificable del proceso |
+| Multi-tenancy | Cada despacho (tenant) tiene datos completamente aislados — ver `architecture.md` |
+| Trazabilidad y auditoría | Toda respuesta de IA cita sus fuentes; todo acceso a un proceso o documento queda registrado para auditoría |
+| Escala serverless | AWS Lambda maneja el cómputo; no hay servidores que gestionar |
 
-## Project Structure
+## Estructura del Proyecto
 
-DocLens is composed of three repositories:
+DocLens está compuesto por cuatro repositorios:
 
 ### `DocLens.Lambda.Template`
 
-The **backend core**. An ASP.NET Core Minimal API hosted on AWS Lambda (.NET 10). Receives document processing requests, runs OCR, performs semantic extraction via Bedrock, and returns structured results.
+El **núcleo del backend**. Una API mínima de ASP.NET Core alojada en AWS Lambda (.NET 10). Gestiona procesos, clientes, documentos, usuarios y permisos; ejecuta OCR y análisis semántico vía Bedrock.
 
-→ See [DocLens.Lambda](projects/lambda.md)
+→ Ver [DocLens.Lambda](projects/lambda.md)
 
 ### `DocLens.Web.Template`
 
-A **React + TypeScript frontend template** following Feature-Sliced Design (FSD). Provides the base architecture for the DocLens UI — routing, layout, shared components, and GitHub Actions CI/CD workflows.
+Una **plantilla de frontend en React + TypeScript** siguiendo Feature-Sliced Design (FSD). Provee la arquitectura base para la interfaz de DocLens — enrutamiento, layout, componentes compartidos, y flujos de CI/CD con GitHub Actions.
 
-→ See [DocLens.Web.Template](projects/web-template.md)
+→ Ver [DocLens.Web.Template](projects/web-template.md)
 
 ### `DocLens.Skills`
 
-A **plugin marketplace** for GitHub Copilot and Claude Code. Contains automation skills for the DocLens development workflow: PR generation, GitHub issue creation, and pre-checks.
+Un **marketplace de plugins** para GitHub Copilot y Claude Code. Contiene skills de automatización para el flujo de desarrollo de DocLens: generación de PRs, creación de issues de GitHub, y pre-checks.
 
-→ See [DocLens.Skills](projects/skills.md)
+→ Ver [DocLens.Skills](projects/skills.md)
 
-## Primary Region
+### `DocLens.Docs`
 
-| Region | Role |
+Este sitio de documentación (MkDocs) — arquitectura, flujo de datos, referencia de API y ADRs.
+
+## Región Principal
+
+| Región | Rol |
 |---|---|
-| `eu-west-1` (Ireland) | Primary |
-| `eu-west-2` (London) | Failover consideration |
+| `eu-west-1` (Irlanda) | Primaria — única región activa en V1 (ver [ADR-013](adrs/013-disaster-recovery-strategy.md)) |

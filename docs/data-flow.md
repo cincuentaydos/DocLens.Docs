@@ -1,168 +1,145 @@
-# Data Flow
+# Flujo de Datos
 
-## Full Upload and Processing Flow
+## Flujo Completo de Subida y Procesamiento
 
-The complete flow from a client uploading a document to receiving extraction results spans three steps: prepare, upload, and process.
+El flujo completo desde que un cliente sube un documento hasta que recibe el resultado de la extracción consta de: preparar, subir, y procesar automáticamente (sin llamada explícita del cliente para iniciar el procesamiento — ver [ADR-011](adrs/011-document-processing-trigger.md)).
 
 ```mermaid
 sequenceDiagram
-    participant C as Tenant Client
-    participant GW as API Gateway + Intake Lambda
+    participant C as Cliente / Usuario
+    participant GW as API Gateway + Lambda
     participant S3 as Amazon S3
     participant GD as GuardDuty
-    participant SQ as SQS
-    participant WK as Worker Lambda
+    participant EB as EventBridge
+    participant SQ as SQS + DLQ
+    participant WK as Lambda Processor
     participant TX as Textract
     participant BD as Bedrock / Claude
-    participant DB as DynamoDB
+    participant DB as Aurora PostgreSQL
 
     C->>GW: POST /documents/prepare (JWT)
-    GW->>GW: validate tenantId claim
-    GW->>S3: generate pre-signed PUT URL
-    GW->>DB: write PENDING record
+    GW->>GW: validar tenant + permiso sobre el proceso
+    GW->>S3: generar URL PUT prefirmada
+    GW->>DB: escribir registro PENDING
     GW-->>C: { documentId, versionNumber, uploadUrl }
 
-    C->>S3: PUT file (direct — bypasses Lambda)
+    C->>S3: PUT archivo (directo — evita Lambda)
     S3-->>C: 200 OK
-    S3-)GD: trigger malware scan (async)
-    GD->>S3: tag object (CLEAN / THREATS_FOUND / UNSCANNABLE)
+    S3-)GD: disparar escaneo de malware (async)
+    GD->>EB: publicar resultado del escaneo
 
-    C->>GW: POST /documents/process
-    GW->>SQ: enqueue processing job
-    GW-->>C: 202 Accepted
+    alt resultado CLEAN
+        EB->>SQ: reenviar evento a la cola
+    else THREATS_FOUND o UNSCANNABLE
+        EB->>DB: (vía función ligera) escribir registro REJECTED
+    end
 
-    loop poll until status ≠ PENDING
+    loop sondear hasta estado ≠ PENDING
         C->>GW: GET /documents/{id}/versions/{n}
-        GW->>DB: read version record
+        GW->>DB: leer registro de versión
         GW-->>C: { status: PENDING | COMPLETED | DUPLICATE | REJECTED }
     end
 
-    SQ->>WK: consume message
-    WK->>S3: GetObjectTagging
+    SQ->>WK: consumir mensaje
+    WK->>WK: calcular SHA-256 de los bytes del archivo
+    WK->>DB: comparar SHA vs. última versión
 
-    alt THREATS_FOUND or UNSCANNABLE
-        WK->>DB: write REJECTED record
-    else tag absent — scan still running
-        WK->>SQ: visibility timeout expires — retry
-    else CLEAN
-        WK->>WK: compute SHA-256 of PDF bytes
-        WK->>DB: check SHA vs latest version
-        alt SHA matches — duplicate
-            WK->>DB: write DUPLICATE record
-        else new content
-            WK->>TX: ExtractTextAsync
-            TX-->>WK: raw text
-            WK->>BD: InvokeModel (Claude)
-            BD-->>WK: structured fields
-            WK->>DB: fetch previous version fields
-            WK->>WK: compute JSON Patch diff
-            WK->>DB: write COMPLETED + fields + diff
-            WK->>SQ: publish ExtractionCompleted (notifications queue)
-        end
+    alt SHA coincide — duplicado
+        WK->>DB: escribir registro DUPLICATE
+    else contenido nuevo
+        WK->>TX: ExtractTextAsync (o parseo nativo, ver ADR-003)
+        TX-->>WK: texto crudo
+        WK->>BD: InvokeModel (Claude)
+        BD-->>WK: campos estructurados
+        WK->>DB: obtener campos de la versión anterior
+        WK->>WK: calcular diff JSON Patch
+        WK->>DB: escribir COMPLETED + campos + diff
     end
 ```
 
-> See [ADR-005](adrs/005-upload-strategy.md) for the upload mechanism rationale (pre-signed URL vs. backend proxy).
-> See [ADR-004](adrs/004-malware-scanning.md) for the malware scanning gate logic.
+> Ver [ADR-011](adrs/011-document-processing-trigger.md) para el mecanismo de disparo (GuardDuty → EventBridge → SQS).
+> Ver [ADR-003](adrs/003-ocr-strategy.md) para la estrategia de enrutamiento de extracción de texto.
 
 ---
 
-## Step 1 — Prepare (`POST /documents/prepare`)
+## Paso 1 — Preparar (`POST /documents/prepare`)
 
 ```mermaid
 flowchart TD
-    A["POST /documents/prepare"] --> B["TenantMiddleware\nresolves tenantId from JWT"]
-    B --> C{documentId\nprovided?}
-    C -->|No — new document| D["Generate documentId (GUID)\nversionNumber = 1"]
-    C -->|Yes — new version| E["Validate documentId belongs\nto authenticated tenant\nversionNumber = latestVersion + 1"]
-    D --> F["Construct S3 key\n{tenantId}/documents/{documentId}/v{n}.pdf"]
+    A["POST /documents/prepare"] --> B["Middleware de tenant\nresuelve empresa_id desde el JWT"]
+    B --> C{"¿Se proveyó\ndocumentId?"}
+    C -->|No — documento nuevo| D["Generar documentId (GUID)\nversionNumber = 1"]
+    C -->|Sí — nueva versión| E["Validar que documentId pertenece\nal tenant autenticado\nversionNumber = latestVersion + 1"]
+    D --> F["Construir clave S3\n{tenantId}/documents/{documentId}/v{n}.{ext}"]
     E --> F
-    F --> G["Generate pre-signed PUT URL\n15-min TTL · PUT only · application/pdf"]
-    G --> H["Write PENDING version record\nDynamoDB SK=DOCUMENT#id#VERSION#n"]
-    H --> I["Return { documentId, versionNumber, uploadUrl }"]
+    F --> G["Generar URL PUT prefirmada\nTTL 15 min · solo PUT · content-type validado"]
+    G --> H["Escribir registro de versión PENDING en Aurora"]
+    H --> I["Devolver { documentId, versionNumber, uploadUrl }"]
 ```
 
 ---
 
-## Step 2 — Upload (Client → S3 directly)
+## Paso 2 — Subida (Cliente → S3 directamente)
 
-The client PUTs the file bytes directly to the pre-signed URL. This call goes to S3, not to API Gateway or Lambda.
+El cliente hace PUT de los bytes del archivo directamente a la URL prefirmada. Esta llamada va a S3, no a API Gateway ni a Lambda.
 
 ```mermaid
 flowchart TD
-    A["Client PUT {uploadUrl}\nContent-Type: application/pdf\nBody: file bytes"] --> B["S3 stores object\n{tenantId}/{year}/{month}/{documentId}.pdf"]
-    B --> C["GuardDuty Malware Protection\nscans object — typically seconds"]
-    C --> D["Tag object:\nGuardDutyMalwareScanStatus\nCLEAN · THREATS_FOUND · UNSCANNABLE"]
+    A["Cliente PUT {uploadUrl}\nContent-Type validado\nBody: bytes del archivo"] --> B["S3 almacena el objeto\n{tenantId}/documents/{documentId}/v{n}.{ext}"]
+    B --> C["GuardDuty Malware Protection\nescanea el objeto — normalmente segundos"]
+    C --> D["Publica el resultado del escaneo\ncomo evento en EventBridge"]
 ```
 
 ---
 
-## Step 3 — Process (`POST /documents/process` + Worker Lambda)
+## Paso 3 — Procesamiento (disparado por EventBridge, sin llamada del cliente)
 
-`POST /documents/process` is handled by the **intake Lambda** — it enqueues a job and returns `202 Accepted` immediately. The **worker Lambda** consumes the SQS message and performs all extraction logic.
-
-**Intake Lambda:**
+Ver [ADR-011](adrs/011-document-processing-trigger.md) para la decisión completa. Una regla de EventBridge filtra el resultado del escaneo de GuardDuty y solo reenvía a SQS cuando el resultado es `CLEAN`. No existe un endpoint `/process` ni una Lambda de intake — el propio evento de escaneo limpio es el disparador.
 
 ```mermaid
 flowchart TD
-    A["POST /documents/process"] --> B["Validate request\n(documentId, versionNumber, s3Key, documentType)"]
-    B --> C["Validate s3Key prefix\nmatches authenticated tenantId"]
-    C -->|mismatch| D["403 Forbidden"]
-    C -->|valid| E["Enqueue message to SQS\n(documentId, versionNumber, s3Key, tenantId, documentType)"]
-    E --> F["202 Accepted"]
+    A["Evento de EventBridge\nresultado CLEAN"] --> B["SQS + DLQ"]
+    B --> C["Lambda Processor consume el mensaje"]
+    C --> D["Calcular SHA-256\nde los bytes desde S3"]
+    D --> E{"¿SHA coincide\ncon la última versión?"}
+    E -->|Sí — duplicado| F["Escribir registro DUPLICATE"]
+    E -->|No — contenido nuevo| G["IContentExtractionService.ExtractTextAsync\n(enruta por formato detectado)"]
+
+    G --> G2{"Formato detectado"}
+
+    G2 -->|PDF| H{"Resultado de PdfPig"}
+    H -->|"texto > umbral\nPDF digital"| I["Texto listo\ngratis · milisegundos · sin red"]
+    H -->|"texto < umbral\ndocumento escaneado"| J["Amazon Textract\nDetectDocumentText"]
+    J --> I
+
+    G2 -->|"Texto nativo\n.md .txt .docx .pptx .xlsx"| K["Parseo directo\nlectura UTF-8, o\nDocumentFormat.OpenXml para OOXML"]
+    K --> I
+
+    G2 -->|"Imagen suelta\n.png .jpg .tiff"| L["Amazon Textract\nDetectDocumentText"]
+    L --> I
+
+    I --> M["ISemanticAnalysisService.AnalyzeAsync\nBuildPrompt → InvokeModel Claude → parsear JSON"]
+    M --> N{"¿Existe versión\nanterior?"}
+    N -->|No — v1| O["Escribir registro COMPLETED\nsolo campos · sin diff"]
+    N -->|Sí| P["Calcular diff JSON Patch\ncampos v_anterior → v_nueva"]
+    P --> Q["Escribir registro COMPLETED\ncampos + diffFromPrevious"]
 ```
 
-**Worker Lambda (SQS consumer):**
+Un resultado `THREATS_FOUND` o `UNSCANNABLE` de GuardDuty no genera un evento reenviado a esta cola — se maneja por una vía separada que escribe directamente el registro `REJECTED` (ver [ADR-004](adrs/004-malware-scanning.md) y [ADR-011](adrs/011-document-processing-trigger.md)).
 
-```mermaid
-flowchart TD
-    A["SQS message consumed\nby Worker Lambda"] --> B["S3:GetObjectTagging"]
-    B --> C{GuardDutyMalwareScanStatus}
-
-    C -->|THREATS_FOUND| D["Write REJECTED record\nno retry"]
-    C -->|UNSCANNABLE| D
-    C -->|tag absent| E["Throw exception\nSQS visibility timeout → retry"]
-    C -->|CLEAN| F["Compute SHA-256\nof file bytes from S3"]
-    F --> G{SHA matches\nlatest version?}
-    G -->|Yes — duplicate| H["Write DUPLICATE record"]
-    G -->|No — new content| I["IContentExtractionService.ExtractTextAsync\n(routes by detected format)"]
-
-    I --> I2{Detected format}
-
-    I2 -->|PDF| J{PdfPig result}
-    J -->|"text > threshold\ndigital PDF"| K["Text ready\nfree · milliseconds · no network call"]
-    J -->|"text < threshold\nscanned document"| L["Amazon Textract\nDetectDocumentText"]
-    L --> K
-
-    I2 -->|"Native text\n.md .txt .docx .pptx .xlsx"| K2["Direct parse\nUTF-8 read, or\nDocumentFormat.OpenXml for OOXML"]
-    K2 --> K
-
-    I2 -->|"Loose image\n.png .jpg .tiff"| L2["Amazon Textract\nDetectDocumentText"]
-    L2 --> K
-
-    K --> M["ISemanticAnalysisService.AnalyzeAsync\nBuildPrompt → InvokeModel Claude → parse JSON"]
-    M --> N{Previous\nversion exists?}
-    N -->|No — v1| O["Write COMPLETED record\nfields only · no diff"]
-    N -->|Yes| P["Compute JSON Patch diff\nfields v_prev → fields v_new"]
-    P --> Q["Write COMPLETED record\nfields + diffFromPrevious"]
-    O --> R["Publish ExtractionCompleted\nto notifications SQS queue"]
-    Q --> R
-```
-
-> See [ADR-003](adrs/003-ocr-strategy.md) for the text-extraction routing strategy (PDF hybrid fast path, native-text parsing, and image OCR).
-> See [ADR-006](adrs/006-sync-vs-async-processing.md) for the synchronous processing decision.
+> Ver [ADR-003](adrs/003-ocr-strategy.md) para la estrategia de enrutamiento de extracción de texto (ruta híbrida de PDF, parseo de texto nativo, y OCR de imágenes).
 
 ---
 
-## S3 Storage Convention
+## Convención de Almacenamiento en S3
 
 ```
 s3://<bucket>/{tenantId}/documents/{documentId}/v{versionNumber}.{ext}
 ```
 
-`{ext}` is derived server-side from the upload's validated `contentType` (`.pdf`, `.md`, `.docx`, `.png`, etc.) — see the supported-formats allow-list in [ADR-005](adrs/005-upload-strategy.md#chosen-approach). It is never assumed to be `.pdf`.
+`{ext}` se deriva del lado del servidor a partir del `contentType` validado en la subida — ver la lista de formatos soportados en [ADR-005](adrs/005-upload-strategy.md#formatos-soportados-lista-permitida). Nunca se asume `.pdf`.
 
-For RAG ingestion, a companion metadata file is written alongside the document:
+Para la ingesta a RAG, se escribe un archivo de metadatos complementario junto al documento:
 
 ```
 s3://<bucket>/{tenantId}/documents/{documentId}/v{versionNumber}.{ext}.metadata.json
@@ -171,107 +148,136 @@ s3://<bucket>/{tenantId}/documents/{documentId}/v{versionNumber}.{ext}.metadata.
 ```json
 {
   "metadataAttributes": {
-    "tenantId": "tenant-abc",
-    "documentType": "invoice",
-    "documentId": "doc-123"
+    "empresa_id": "tenant-abc",
+    "proceso_id": "proceso-123",
+    "documento_id": "doc-456"
   }
 }
 ```
 
 ---
 
-## DynamoDB Storage Convention
+## Convención de Almacenamiento en Aurora PostgreSQL
 
-Two item types per document, both under the same partition key:
+Ver [ADR-008](adrs/008-data-storage-strategy.md) para el esquema completo. Resumen de las tablas centrales del pipeline documental:
 
 ```
-PK: TENANT#{tenantId}
-
-SK: DOCUMENT#{documentId}                      ← group record (one per document)
-SK: DOCUMENT#{documentId}#VERSION#{0001}       ← version record (one per upload)
+empresas             -- un tenant por fila
+usuarios             -- internos (admin/no-admin) y de cliente
+clientes             -- clientes del despacho, asociados a procesos
+procesos             -- casos legales
+documentos           -- grupo de documento (uno por documentId)
+documento_versiones  -- una fila por subida (versionNumber, sha256, estado, campos, diff)
+permisos             -- qué usuario accede a qué proceso
+audit_log            -- auditoría de accesos
 ```
 
-SK version numbers are zero-padded to 4 digits to support chronological range queries.
+**Estados del ciclo de vida de una versión de documento:**
 
-**Group record** — created on first `POST /documents/prepare`, updated on each new version:
-
-| Attribute | Description |
-|---|---|
-| `documentId` | Stable document identifier |
-| `documentType` | Document type |
-| `latestVersion` | Current highest version number |
-| `createdAt` / `updatedAt` | ISO 8601 timestamps |
-
-**Version record** — lifecycle states:
-
-| Status | Written at |
+| Estado | Escrito en |
 |---|---|
 | `PENDING` | `POST /documents/prepare` |
-| `COMPLETED` | `POST /documents/process` — extraction succeeded |
-| `DUPLICATE` | `POST /documents/process` — SHA matches previous version |
-| `REJECTED` | `POST /documents/process` — scan failed (THREATS_FOUND / UNSCANNABLE) |
+| `COMPLETED` | Tras extracción exitosa (Lambda Processor) |
+| `DUPLICATE` | El SHA coincide con la versión anterior |
+| `REJECTED` | GuardDuty reportó `THREATS_FOUND` o `UNSCANNABLE` |
 
 ---
 
-## RAG Ingestion Flow
+## Flujo de Ingesta a RAG
 
-After extraction, if the document needs to be indexed for semantic search:
+Después de la extracción, si el documento debe indexarse para búsqueda semántica:
 
 ```mermaid
 flowchart TD
-    A["Clean text / original PDF\nalready in S3 from upload step"] --> B["Write metadata file\n{documentId}.pdf.metadata.json"]
+    A["Texto limpio / documento original\nya en S3 desde la subida"] --> B["Escribir archivo de metadatos\n{documentId}.{ext}.metadata.json"]
     B --> C["StartIngestionJob\nBedrock Knowledge Base"]
-    C --> D["Chunk · Embed · Index\nOpenSearch Serverless"]
+    C --> D["Chunk · Embed · Index\nAurora PostgreSQL + pgvector"]
 
-    E["Query time:\nRetrieve with filter tenantId"] --> F["Returns chunks scoped\nto that tenant only"]
-    F --> G["RetrieveAndGenerate\npasses chunks to Claude for synthesis"]
+    E["Momento de consulta:\nRetrieve con filtro empresa_id + proceso_id"] --> F["Devuelve fragmentos acotados\na ese tenant y proceso únicamente"]
+    F --> G["RetrieveAndGenerate\npasa los fragmentos a Claude para síntesis"]
 ```
 
-See [ADR-001](adrs/001-rag-strategy.md) for the full RAG strategy rationale.
+Ver [ADR-001](adrs/001-rag-strategy.md) para la estrategia completa de RAG y [ADR-008](adrs/008-data-storage-strategy.md) para el vector store.
 
 ---
 
-## Post-Extraction Notification Flow
+## Flujo de Consulta de IA (sin agente)
 
 ```mermaid
 flowchart LR
-    A["DocumentExtractionService"] -->|"publish ExtractionCompleted"| B["Amazon SQS"]
-    B --> C["Consumer Lambda\nreads from queue"]
-    C --> D["Send notification\nto tenant contact"]
+    A["Usuario pregunta\nsobre un proceso"] --> B["Backend valida permiso\ndel usuario sobre el proceso"]
+    B --> C["Retrieve en Bedrock KB\nfiltro empresa_id + proceso_id"]
+    C --> D["Claude genera\nrespuesta o borrador"]
+    D --> E["Respuesta + fuentes citadas"]
 ```
 
-!!! note
-    SQS is used as a **notifier only** — it does not trigger the extraction pipeline.
+Ver [ADR-012](adrs/012-no-autonomous-agent.md) para la decisión de no usar un agente autónomo.
 
 ---
 
-## Key Data Contracts
+## Contratos de Datos Clave
 
-### `ProcessDocumentRequest`
+### `Proceso`
 
 ```csharp
-record ProcessDocumentRequest(
-    string DocumentId,
-    string S3Key,
-    DocumentType DocumentType
+record Proceso(
+    Guid Id,
+    Guid EmpresaId,
+    Guid? ClienteId,
+    string Titulo,
+    string Estado,
+    DateTimeOffset CreadoEn,
+    DateTimeOffset ActualizadoEn
 );
 ```
 
-### `ExtractionResult`
+### `Cliente`
 
 ```csharp
-record ExtractionResult
-{
-    string DocumentId
-    string TenantId
-    DocumentType DocumentType
-    Dictionary<string, string> Fields
-    DateTimeOffset ProcessedAt
-}
+record Cliente(
+    Guid Id,
+    Guid EmpresaId,
+    string Nombre,
+    DateTimeOffset CreadoEn
+);
 ```
 
-### `DocumentType` (enum)
+### `Documento` / `DocumentoVersion`
 
-Supported values: `Invoice`, `Contract`, `Report`, `CV`.
+```csharp
+record Documento(
+    Guid Id,
+    Guid EmpresaId,
+    Guid ProcesoId,
+    string? Tipo,
+    int LatestVersion
+);
 
-To add a new type: add the variant to `Models/DocumentType.cs` and add a matching `case` in `BedrockSemanticAnalysisService.BuildPrompt`.
+record DocumentoVersion(
+    Guid Id,
+    Guid DocumentoId,
+    int VersionNumero,
+    string ContentType,
+    string S3Key,
+    string Sha256,
+    string Estado,
+    Dictionary<string, string>? Campos,
+    JsonPatchDocument? DiffPrevio,
+    DateTimeOffset? ProcesadoEn
+);
+```
+
+### `RespuestaIA`
+
+```csharp
+record RespuestaIA(
+    string Respuesta,
+    IReadOnlyList<FuenteCitada> Fuentes
+);
+
+record FuenteCitada(
+    Guid DocumentoId,
+    int VersionNumero,
+    string FragmentoTexto
+);
+```

@@ -1,8 +1,8 @@
 # DocLens.Web.Template
 
-Base React frontend template for DocLens web projects, following **Feature-Sliced Design (FSD)**.
+Plantilla base de frontend en React para los proyectos web de DocLens, siguiendo **Feature-Sliced Design (FSD)**.
 
-**Repository:** [`DocLens.Web.Template`](https://github.com/cincuentaydos/DocLens.Web.Template)
+**Repositorio:** [`DocLens.Web.Template`](https://github.com/cincuentaydos/DocLens.Web.Template)
 
 ## Stack
 
@@ -12,46 +12,46 @@ Base React frontend template for DocLens web projects, following **Feature-Slice
 - React Router
 - ESLint
 - GitHub Actions (CI/CD)
-- Terraform (infrastructure scaffolding)
+- Terraform (scaffolding de infraestructura)
 
-## Requirements
+## Requisitos
 
 - Node.js 22+
 - npm 10+
 
-## Project Structure
+## Estructura del Proyecto
 
 ```
 .github/
   workflows/
-    pull-request.yml   # validates PR changes
-    ci.yml             # lint, build, publishes dist artifact
-    cd.yml             # manual deployment workflow (template)
+    pull-request.yml   # valida cambios de PR
+    ci.yml             # lint, build, publica el artefacto dist
+    cd.yml             # workflow de despliegue manual (plantilla)
 infra/
   terraform/
     environments/
       dev/
       staging/
       production/
-    modules/           # reusable Terraform modules
+    modules/           # módulos reutilizables de Terraform
 src/
-  app/                 # bootstrap, providers, routing, global styles
-  pages/               # full-page components
-  widgets/             # large reusable UI blocks
-  features/            # business use cases
-  entities/            # domain entities
-  shared/              # UI, config, utilities, cross-cutting pieces
+  app/                 # arranque, providers, enrutamiento, estilos globales
+  pages/               # componentes de página completa
+  widgets/             # bloques de UI grandes y reutilizables
+  features/            # casos de uso de negocio
+  entities/             # entidades de dominio
+  shared/              # UI, configuración, utilidades, piezas transversales
 main.tsx
 ```
 
 !!! note
-    The `processes` layer is omitted by default — reserved for genuinely complex global flows.
+    La capa `processes` se omite por defecto — reservada para flujos globales genuinamente complejos.
 
-## FSD Layer Aliases
+## Alias de Capas FSD
 
-All layers are aliased for clean imports:
+Todas las capas tienen alias para imports limpios:
 
-| Alias | Maps to |
+| Alias | Apunta a |
 |---|---|
 | `@/*` | `src/` |
 | `@app/*` | `src/app/` |
@@ -61,38 +61,38 @@ All layers are aliased for clean imports:
 | `@entities/*` | `src/entities/` |
 | `@shared/*` | `src/shared/` |
 
-## Available Scripts
+## Scripts Disponibles
 
-| Script | Description |
+| Script | Descripción |
 |---|---|
-| `npm run dev` | Start Vite development server |
-| `npm run build` | Build production bundle |
-| `npm run lint` | Run ESLint across the project |
-| `npm run preview` | Serve the built app locally |
+| `npm run dev` | Inicia el servidor de desarrollo de Vite |
+| `npm run build` | Genera el build de producción |
+| `npm run lint` | Ejecuta ESLint en todo el proyecto |
+| `npm run preview` | Sirve el build localmente |
 
-## What the Template Includes
+## Qué Incluye la Plantilla
 
-- Main layout with header and footer (`widgets/app-layout/`)
-- Base routing with home and 404 pages (`pages/home/`, `pages/not-found/`)
-- Initial shared components: `Button`, `Container` (`shared/ui/`)
-- `infra/terraform/` structure ready for IaC
-- GitHub Actions workflows for PR validation, CI, and CD
+- Layout principal con header y footer (`widgets/app-layout/`)
+- Enrutamiento base con páginas de inicio y 404 (`pages/home/`, `pages/not-found/`)
+- Componentes compartidos iniciales: `Button`, `Container` (`shared/ui/`)
+- Estructura de `infra/terraform/` lista para IaC
+- Workflows de GitHub Actions para validación de PR, CI y CD
 
-## How to Reuse This Template
+## Cómo Reutilizar Esta Plantilla
 
-1. Update `src/shared/config` with the new project's brand, copy, and links.
-2. Replace `pages/home` with the real landing or homepage.
-3. Add `pages`, `widgets`, `features`, and `entities` based on the project domain.
-4. Complete Terraform environments and the CD workflow with the real deployment target.
+1. Actualizar `src/shared/config` con la marca, textos y enlaces del nuevo proyecto.
+2. Reemplazar `pages/home` con la landing o página de inicio real.
+3. Agregar `pages`, `widgets`, `features` y `entities` según el dominio del proyecto.
+4. Completar los entornos de Terraform y el workflow de CD con el destino de despliegue real.
 
-## Infrastructure
+## Infraestructura
 
-Terraform is structured to separate environment configuration from reusable modules:
+Terraform está estructurado para separar la configuración de entorno de los módulos reutilizables:
 
 ```
 infra/terraform/
   environments/dev/
   environments/staging/
   environments/production/
-  modules/              # shared modules (empty placeholder — populate per project)
+  modules/              # módulos compartidos (placeholder vacío — completar por proyecto)
 ```

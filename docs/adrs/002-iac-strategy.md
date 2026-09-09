@@ -1,33 +1,33 @@
-# ADR-002 — IaC Strategy
+# ADR-002 — Estrategia de Infraestructura como Código
 
-**Status:** Accepted (2026-06-22)
+**Estado:** Aceptada (2026-06-22)
 
 ---
 
-## Decision
+## Decisión
 
-Use **Terraform** as the primary IaC tool for DocLens infrastructure.
+Usar **Terraform** como herramienta principal de IaC para la infraestructura de DocLens.
 
-## Rationale
+## Justificación
 
-The team has prior Terraform knowledge and a working mental model for HCL-based infrastructure. Leveraging that familiarity reduces ramp-up time and keeps the infrastructure layer predictable from day one.
+El equipo tiene conocimiento previo de Terraform y un modelo mental funcional para infraestructura basada en HCL. Aprovechar esa familiaridad reduce el tiempo de arranque y mantiene la capa de infraestructura predecible desde el primer día.
 
-| Dimension | AWS CDK (C#) | Terraform |
+| Dimensión | AWS CDK (C#) | Terraform |
 | --- | --- | --- |
-| Team familiarity | Low (new toolchain) | High |
-| Language consistency | High (C# throughout) | Low (HCL separate) |
-| AWS new service support | Fast (first-class) | Delayed (provider lag) |
-| State management | CloudFormation (opaque) | Explicit `.tfstate` (transparent) |
-| Cross-provider resources | No | Yes |
-| Higher-level constructs | Yes (L2/L3) | No (explicit only) |
-| Lambda packaging | Native | Manual |
+| Familiaridad del equipo | Baja (herramienta nueva) | Alta |
+| Consistencia de lenguaje | Alta (C# en todo) | Baja (HCL separado) |
+| Soporte de nuevos servicios AWS | Rápido (soporte de primera clase) | Con retraso (rezago del provider) |
+| Gestión de estado | CloudFormation (opaco) | `.tfstate` explícito (transparente) |
+| Recursos multi-proveedor | No | Sí |
+| Constructos de alto nivel | Sí (L2/L3) | No (solo explícito) |
+| Empaquetado de Lambda | Nativo | Manual |
 
-## Constraints to Watch
+## Restricciones a vigilar
 
-- Terraform AWS provider support for Bedrock Knowledge Bases may lag behind new features — use `aws_cloudformation_stack` as an escape hatch if a resource is not yet supported.
-- Remote state backend: S3 + DynamoDB lock table (standard pattern for AWS-hosted projects).
-- Lambda packaging requires manual zip + upload steps — consider a `null_resource` or `terraform-aws-lambda` module to automate this.
+- El soporte del provider de Terraform para AWS puede rezagarse frente a nuevas funcionalidades de Bedrock Knowledge Bases — usar `aws_cloudformation_stack` como vía de escape si un recurso aún no está soportado.
+- Backend de estado remoto: S3 + tabla de bloqueo DynamoDB (patrón estándar para proyectos alojados en AWS).
+- El empaquetado de Lambda requiere pasos manuales de zip + subida — considerar un `null_resource` o el módulo `terraform-aws-lambda` para automatizarlo.
 
-## Current State
+## Estado actual
 
-Terraform scaffolding exists in `infra/terraform/` (Lambda project) and `infra/` (Web template). AWS CDK scaffolding (`infra/src/DocLens.Infra/`) was created during early exploration and will be removed as Terraform coverage grows.
+Existe scaffolding de Terraform en `infra/terraform/` (proyecto Lambda) y `infra/` (plantilla Web). El scaffolding de AWS CDK (`infra/src/DocLens.Infra/`) se creó durante la exploración inicial y se eliminará a medida que crezca la cobertura de Terraform.

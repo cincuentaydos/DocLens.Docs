@@ -1,63 +1,79 @@
-# Tenant Onboarding
+# Alta de Tenants
 
-This page describes how a new tenant (company) gains access to DocLens: how credentials are provisioned, how the `tenantId` is assigned, and how the authentication token is obtained for API calls.
-
----
-
-## Identity Model
-
-DocLens uses **Amazon Cognito** as the identity provider. Each API request carries a Cognito-issued JWT (ID token) in the `Authorization` header. The token contains a custom attribute — `custom:tenantId` — that binds the authenticated user to their tenant.
-
-`TenantMiddleware` in the Lambda reads this claim on every request. All downstream operations (S3 keys, DynamoDB keys, Bedrock filters, log fields) are scoped to this `tenantId`. There is no way to act on behalf of a different tenant from within a single request.
+Esta página describe cómo un nuevo tenant (despacho de abogados) obtiene acceso a DocLens: cómo se provisionan las credenciales, cómo se asigna el `tenantId`, y cómo se obtiene el token de autenticación para las llamadas a la API.
 
 ---
 
-## Tenant ID Convention
+## Modelo de Identidad
 
-A `tenantId` is a **lowercase alphanumeric slug** assigned at onboarding time and never changed.
+DocLens usa **Amazon Cognito** como proveedor de identidad. Cada solicitud de API lleva un JWT emitido por Cognito (ID token) en el encabezado `Authorization`. El token contiene un atributo personalizado — `custom:tenantId` — que vincula al usuario autenticado con su tenant (despacho).
+
+El middleware de tenant en la Lambda lee este claim en cada solicitud. Todas las operaciones downstream (claves S3, filas en Aurora, filtros de Bedrock, campos de log) quedan acotadas a ese `tenantId`. No hay forma de actuar en nombre de un tenant distinto dentro de una misma solicitud.
+
+---
+
+## Tipos de Usuario
+
+Dentro de un mismo tenant existen dos categorías de usuario (ver `architecture.md` → Modelo de Multi-Tenancy):
+
+| Tipo | Descripción | Alcance |
+|---|---|---|
+| `interno_admin` | Usuario interno del despacho con privilegios de administración (crear usuarios, clientes, otorgar permisos, consultar auditoría) | Todo el tenant |
+| `interno` | Usuario interno del despacho sin privilegios de administración | Los procesos para los que tiene permiso explícito (ver `api-reference.md` → Permisos) |
+| `cliente` | Usuario del cliente del despacho — consulta el estado y los documentos de sus propios procesos | Solo los procesos asociados a su `clienteId` |
+
+El tipo de usuario y, cuando aplica, el `clienteId`, se almacenan como atributos personalizados adicionales en Cognito (`custom:tipoUsuario`, `custom:clienteId`), leídos por el middleware de tenant junto con `custom:tenantId`.
+
+Todo acceso de un usuario a un proceso o documento queda registrado en la tabla `audit_log` (ver [ADR-008](adrs/008-data-storage-strategy.md)) y es consultable vía `GET /audit-log` (ver `api-reference.md`) — parte del requisito de auditar el control de accesos.
+
+---
+
+## Convención de Tenant ID
+
+Un `tenantId` es un **slug alfanumérico en minúsculas** asignado en el momento del alta y que nunca cambia.
 
 ```
-tenant-acme
-tenant-globex
-tenant-initech
+despacho-acme
+despacho-globex
+despacho-initech
 ```
 
-The slug is used as a path component in S3 keys and as part of DynamoDB partition keys, so it must:
+El slug se usa como componente de ruta en las claves S3 y como valor de la columna `empresa_id` en Aurora, por lo que debe:
 
-- Contain only lowercase letters, digits, and hyphens
-- Start with a letter
-- Be unique across all tenants
-- Be stable — changing it would orphan all existing documents
+- Contener solo letras minúsculas, dígitos y guiones.
+- Empezar con una letra.
+- Ser único entre todos los tenants.
+- Ser estable — cambiarlo dejaría huérfanos todos los documentos existentes.
 
 ---
 
-## Cognito User Pool Configuration
+## Configuración del User Pool de Cognito
 
-DocLens uses a **single Cognito User Pool** shared across all tenants. Tenant isolation is enforced via the `custom:tenantId` attribute, not via separate pools.
+DocLens usa un **único User Pool de Cognito** compartido entre todos los tenants. El aislamiento por tenant se aplica vía el atributo `custom:tenantId`, no mediante pools separados.
 
-| Setting | Value |
+| Configuración | Valor |
 |---|---|
-| User Pool | One pool per DocLens environment (dev / staging / production) |
-| App Client | One app client per environment, used by the frontend |
-| Auth flows | `USER_PASSWORD_AUTH` (dev); `USER_SRP_AUTH` (staging / production) |
-| Custom attribute | `custom:tenantId` — read-only after set; not modifiable by the user |
-| Token | ID token (carries custom attributes); access token does not |
-| Token TTL | 1 hour (ID token); 30 days (refresh token — configurable) |
+| User Pool | Uno por entorno de DocLens (dev / staging / production) |
+| App Client | Uno por entorno, usado por el frontend |
+| Flujos de auth | `USER_PASSWORD_AUTH` (dev); `USER_SRP_AUTH` (staging / production) |
+| Atributo personalizado | `custom:tenantId` — de solo lectura tras asignarse; no modificable por el usuario |
+| Token | ID token (lleva los atributos personalizados); el access token no |
+| TTL del token | 1 hora (ID token); 30 días (refresh token — configurable) |
 
-!!! warning "ID token, not access token"
-    The Lambda validates the **ID token** (`Authorization: Bearer <id-token>`). The access token does not carry custom attributes and will fail the `tenantId` claim check.
+!!! warning "ID token, no access token"
+    La Lambda valida el **ID token** (`Authorization: Bearer <id-token>`). El access token no lleva atributos personalizados y fallará la verificación del claim `tenantId`.
 
 ---
 
-## Onboarding Flow
+## Flujo de Alta
 
-Tenant onboarding is an **admin-managed process** — tenants do not self-register. A new tenant is provisioned by an administrator using the AWS CLI or Terraform.
+El alta de un tenant es un **proceso gestionado por un administrador** — los tenants no se autorregistran. Un nuevo tenant se provisiona mediante la AWS CLI o Terraform.
 
-### Step 1 — Assign a tenant ID
+### Paso 1 — Asignar un tenant ID
 
-Choose a unique slug following the convention above. This is the canonical identifier — record it in the tenant registry.
+Elegir un slug único siguiendo la convención anterior. Este es el identificador canónico — registrarlo en el registro de tenants.
 
-### Step 2 — Create the Cognito user
+### Paso 2 — Crear el primer usuario interno admin
 
 ```bash
 aws cognito-idp admin-create-user \
@@ -67,15 +83,16 @@ aws cognito-idp admin-create-user \
       Name=email,Value=<email> \
       Name=email_verified,Value=true \
       Name=custom:tenantId,Value=<tenant-slug> \
+      Name=custom:tipoUsuario,Value=interno_admin \
   --temporary-password <temp-password> \
   --message-action SUPPRESS
 ```
 
-The `custom:tenantId` attribute is set here and cannot be changed by the user — Cognito enforces this via the attribute's `Mutable: false` pool configuration.
+El atributo `custom:tenantId` se fija aquí y no puede ser cambiado por el usuario — Cognito lo impone vía la configuración `Mutable: false` del pool. Usuarios internos adicionales y usuarios de cliente se crean posteriormente vía `POST /usuarios` y `POST /clientes/{clienteId}/usuarios` respectivamente (ver `api-reference.md`), no directamente por CLI.
 
-### Step 3 — Force password change
+### Paso 3 — Forzar el cambio de contraseña
 
-On first login, Cognito requires the user to set a permanent password. This happens via the frontend login flow or directly via the CLI:
+En el primer inicio de sesión, Cognito exige que el usuario establezca una contraseña permanente. Esto ocurre vía el flujo de login del frontend o directamente vía CLI:
 
 ```bash
 aws cognito-idp admin-set-user-password \
@@ -85,19 +102,19 @@ aws cognito-idp admin-set-user-password \
   --permanent
 ```
 
-### Step 4 — Deliver credentials
+### Paso 4 — Entregar credenciales
 
-Provide the tenant with:
+Proveer al tenant:
 
-- Their login email
-- Their initial (or permanent) password
-- The frontend URL for their environment
+- Su correo de login.
+- Su contraseña inicial (o permanente).
+- La URL del frontend para su entorno.
 
 ---
 
-## Authentication Flow (Client)
+## Flujo de Autenticación (Cliente)
 
-Once provisioned, a tenant authenticates via the Cognito-hosted UI or directly using the Cognito API:
+Una vez provisionado, un usuario se autentica vía la UI alojada de Cognito o directamente usando la API de Cognito:
 
 ```
 POST https://cognito-idp.eu-west-1.amazonaws.com/
@@ -113,7 +130,7 @@ X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth
 }
 ```
 
-**Response:**
+**Respuesta:**
 
 ```json
 {
@@ -126,7 +143,7 @@ X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth
 }
 ```
 
-The `IdToken` is the bearer token used in all DocLens API calls:
+El `IdToken` es el token bearer usado en todas las llamadas a la API de DocLens:
 
 ```
 Authorization: Bearer <IdToken>
@@ -134,9 +151,9 @@ Authorization: Bearer <IdToken>
 
 ---
 
-## Token Renewal
+## Renovación de Tokens
 
-Tokens expire after 1 hour. The frontend refreshes them automatically using the `RefreshToken`:
+Los tokens expiran después de 1 hora. El frontend los renueva automáticamente usando el `RefreshToken`:
 
 ```
 POST https://cognito-idp.eu-west-1.amazonaws.com/
@@ -153,29 +170,20 @@ X-Amz-Target: AWSCognitoIdentityProviderService.InitiateAuth
 
 ---
 
-## Multi-User Tenants
+## Baja de un Tenant
 
-A single tenant may have multiple users (e.g., different employees of the same company). All users of the same tenant share the same `custom:tenantId` — they see the same documents and extraction results.
+Para revocar el acceso de un tenant:
 
-User management within a tenant (invite, deactivate, role assignment) is not in scope for the current phase. All users of a tenant have the same permissions.
+1. **Deshabilitar todos los usuarios de Cognito** de ese tenant — impide la emisión de nuevos tokens. Los tokens existentes siguen siendo válidos hasta su expiración (máximo 1 hora).
+2. **Opcionalmente eliminar sus datos** de S3 y Aurora usando el `tenantId`/`empresa_id` como filtro.
+3. **Opcionalmente eliminar los datos de su base de conocimiento** disparando un job de eliminación de ingesta acotado a su filtro de metadatos `empresa_id`.
 
----
-
-## Tenant Offboarding
-
-To revoke a tenant's access:
-
-1. **Disable all Cognito users** for that tenant — prevents new token issuance. Existing tokens remain valid until expiry (max 1 hour).
-2. **Optionally delete their data** from S3 and DynamoDB using the `tenantId` prefix/partition key.
-3. **Optionally remove their Knowledge Base data** by triggering a deletion ingestion job scoped to their `tenantId` metadata filter.
-
-!!! danger "Data deletion is irreversible"
-    Deleting S3 objects and DynamoDB items cannot be undone. Always confirm the tenant ID before executing bulk deletes.
+!!! danger "La eliminación de datos es irreversible"
+    Eliminar objetos de S3 y filas de Aurora no puede deshacerse. Confirmar siempre el `tenantId` antes de ejecutar eliminaciones masivas.
 
 ---
 
-## Open Questions
+## Preguntas Abiertas
 
-- Should tenant onboarding be automated via a management API endpoint rather than admin CLI commands?
-- Should multi-user tenants support role-based access control (e.g., admin vs. read-only users)?
-- What is the data retention policy after offboarding — immediate deletion or a grace period?
+- ¿Debería automatizarse el alta de tenants vía un endpoint de gestión en lugar de comandos CLI de administrador?
+- ¿Cuál es la política de retención de datos tras la baja — eliminación inmediata o un período de gracia?

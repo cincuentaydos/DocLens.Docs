@@ -4,39 +4,38 @@ hide:
   - toc
 ---
 
-## Repositories
+## Repositorios
 
-| Repository | Description |
+| Repositorio | Descripción |
 |---|---|
-| [`DocLens.Lambda.Template`](https://github.com/cincuentaydos/DocLens.Lambda.Template) | Backend core — document processing API (.NET 10, Lambda) |
-| [`DocLens.Web.Template`](https://github.com/cincuentaydos/DocLens.Web.Template) | React 19 frontend template (Feature-Sliced Design) |
-| [`DocLens.Skills`](https://github.com/cincuentaydos/DocLens.Skills) | GitHub Copilot / Claude Code plugin marketplace |
+| [`DocLens.Lambda.Template`](https://github.com/cincuentaydos/DocLens.Lambda.Template) | Núcleo del backend — API de gestión de casos legales y procesamiento de documentos (.NET 10, Lambda) |
+| [`DocLens.Web.Template`](https://github.com/cincuentaydos/DocLens.Web.Template) | Plantilla de frontend en React 19 (Feature-Sliced Design) |
+| [`DocLens.Skills`](https://github.com/cincuentaydos/DocLens.Skills) | Marketplace de plugins para GitHub Copilot / Claude Code |
 
-## Quick Navigation
+## Navegación Rápida
 
 <div class="grid cards" markdown>
 
-- :material-file-document-outline: **[Overview](overview.md)**
+- :material-file-document-outline: **[Resumen](overview.md)**
 
-    What DocLens is, its purpose, and how it is structured.
+    Qué es DocLens, su propósito, y cómo está estructurado.
 
-- :material-floor-plan: **[Architecture](architecture.md)**
+- :material-floor-plan: **[Arquitectura](architecture.md)**
 
-    AWS services, component map, multi-tenancy model, and design principles.
+    Servicios de AWS, mapa de componentes, modelo de multi-tenancy y principios de diseño.
 
-- :material-chart-timeline-variant: **[Data Flow](data-flow.md)**
+- :material-chart-timeline-variant: **[Flujo de Datos](data-flow.md)**
 
-    End-to-end request flow from document upload to extraction result.
+    Flujo completo, desde la subida de un documento hasta el resultado de la extracción y la consulta con IA.
 
 - :material-vote: **[ADRs](adrs/001-rag-strategy.md)**
 
-    Architecture Decision Records — RAG, IaC, and OCR strategy.
+    Registros de Decisiones de Arquitectura — RAG, IaC, almacenamiento de datos, red, cómputo, disparo de procesamiento, IA y recuperación ante desastres.
 
 </div>
 
-## Primary Region
+## Región Principal
 
-| Region | Role |
+| Región | Rol |
 |---|---|
-| `eu-west-1` (Ireland) | Primary |
-| `eu-west-2` (London) | Failover consideration |
+| `eu-west-1` (Irlanda) | Primaria — única región activa en V1 (ver [ADR-013](adrs/013-disaster-recovery-strategy.md)) |

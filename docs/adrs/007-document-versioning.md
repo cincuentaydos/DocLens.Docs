@@ -1,84 +1,82 @@
-# ADR-007 — Document Version History
+# ADR-007 — Historial de Versiones de Documentos
 
-**Status:** Accepted
-
----
-
-## Decision
-
-**Track document versions using a stable `documentId` as the group identifier, with a sequential `versionNumber` per upload. Store SHA-256 per version for duplicate detection. Persist full extracted fields and a JSON Patch diff against the previous version in DynamoDB. Use S3 native versioning for binary storage.**
+**Estado:** Aceptada — motor de almacenamiento actualizado, ver nota abajo.
 
 ---
 
-## Context
+## Decisión
 
-Tenants may upload multiple versions of the same document over time — a contract that gets amended, an invoice that is corrected and reissued, a CV updated after a promotion. Without version history, each upload is treated as an independent document with no relationship to its predecessors.
+**Rastrear las versiones de un documento usando un `documentId` estable como identificador de grupo, con un `versionNumber` secuencial por subida. Almacenar el SHA-256 de cada versión para detección de duplicados. Persistir los campos extraídos completos y un diff JSON Patch contra la versión anterior. Usar claves S3 explícitas por versión para el almacenamiento binario.**
 
-The goal is to allow:
-- Viewing the full history of versions for a document
-- Knowing what changed in the extracted fields between any two versions
-- Detecting duplicate uploads (same content re-uploaded) without reprocessing
+**Motor de almacenamiento:** los registros descritos en este documento se persisten en **Aurora PostgreSQL** (tablas `documentos` y `documento_versiones`), no en DynamoDB — ver [ADR-008](008-data-storage-strategy.md) para el esquema completo.
 
 ---
 
-## Key Concepts
+## Contexto
 
-### Document vs Version
+Un mismo documento de un proceso puede subirse en varias versiones a lo largo del tiempo — un contrato que se enmienda, un escrito que se corrige y se vuelve a presentar. Sin historial de versiones, cada subida se trata como un documento independiente sin relación con sus predecesores.
 
-| Concept | Description | Identifier |
+El objetivo es permitir:
+- Ver el historial completo de versiones de un documento.
+- Saber qué cambió en los campos extraídos entre dos versiones cualesquiera.
+- Detectar subidas duplicadas (mismo contenido resubido) sin reprocesar.
+
+---
+
+## Conceptos clave
+
+### Documento vs. Versión
+
+| Concepto | Descripción | Identificador |
 |---|---|---|
-| **Document** | The stable entity — "the Acme Corp invoice" | `documentId` (chosen at first upload, never changes) |
-| **Version** | A specific upload of that document | `versionNumber` — sequential integer starting at 1 |
+| **Documento** | La entidad estable — "el contrato de arrendamiento del caso Acme" | `documentId` (elegido en la primera subida, nunca cambia) |
+| **Versión** | Una subida específica de ese documento | `versionNumber` — entero secuencial que empieza en 1 |
 
-`documentId` is generated at the first `POST /documents/prepare` call. Subsequent uploads of the same document pass the existing `documentId` — the backend creates a new version under that group.
+`documentId` se genera en la primera llamada a `POST /documents/prepare`. Subidas subsiguientes del mismo documento pasan el `documentId` existente — el backend crea una nueva versión bajo ese grupo.
 
 ### SHA-256
 
-A SHA-256 hash of the PDF bytes is computed in the Lambda after the file is read from S3 (post-GuardDuty scan). It serves two purposes:
+Un hash SHA-256 de los bytes del archivo se calcula en la Lambda Processor después de leer el archivo desde S3 (posterior al escaneo de GuardDuty). Sirve para dos propósitos:
 
-1. **Duplicate detection** — if the new upload's SHA matches the latest version's SHA, the content is identical; skip re-extraction and return the existing result.
-2. **Audit trail** — each version record stores its SHA, making it possible to verify content integrity at any point.
+1. **Detección de duplicados** — si el SHA de la nueva subida coincide con el de la última versión, el contenido es idéntico; se omite la re-extracción y se devuelve el resultado existente.
+2. **Rastro de auditoría** — cada registro de versión almacena su SHA, permitiendo verificar la integridad del contenido en cualquier momento.
 
-### JSON Patch Diff
+### Diff JSON Patch
 
-After extracting fields for a new version, the Lambda computes a **JSON Patch** (RFC 6902) diff against the previous version's fields. This diff is stored alongside the full fields in DynamoDB, enabling:
+Después de extraer los campos de una nueva versión, la Lambda calcula un **JSON Patch** (RFC 6902) contra los campos de la versión anterior. Este diff se almacena junto con los campos completos, permitiendo:
 
-- "What changed between v1 and v2?" without reading both full records
-- Lightweight audit log of field-level changes
-
----
-
-## Options Considered for Binary Storage
-
-### Option A — Custom S3 keys per version
-
-Each version gets its own S3 object at a versioned path:
-
-```
-{tenantId}/documents/{documentId}/v{versionNumber}/{documentId}.pdf
-```
-
-**Strengths:** explicit, human-readable, independent lifecycle per version.  
-**Weaknesses:** requires custom key construction logic; lifecycle rules must be managed manually.
-
-### Option B — S3 native versioning
-
-A single S3 key per document; S3 tracks the binary history automatically via version IDs:
-
-```
-{tenantId}/documents/{documentId}/current.pdf
-```
-
-**Strengths:** S3 manages the version stack; no key changes needed when a new version is uploaded; lifecycle rules apply to the key, not individual objects.  
-**Weaknesses:** S3 version IDs are opaque strings, not sequential integers — must be correlated to `versionNumber` via DynamoDB.
-
-### Decision
-
-**Option A — Custom S3 keys per version.** The versioned path is explicit and independently addressable. It avoids dependence on S3 version ID opacity and makes per-version lifecycle management straightforward. The key construction is simple and deterministic.
+- Responder "¿qué cambió entre v1 y v2?" sin leer ambos registros completos.
+- Un registro de auditoría ligero de cambios a nivel de campo.
 
 ---
 
-## Storage Model
+## Opciones consideradas para el almacenamiento binario
+
+### Opción A — Claves S3 personalizadas por versión
+
+Cada versión obtiene su propio objeto S3 en una ruta versionada:
+
+```
+{tenantId}/documents/{documentId}/v{versionNumber}.{ext}
+```
+
+**Fortalezas:** explícito, legible, ciclo de vida independiente por versión.
+**Debilidades:** requiere lógica de construcción de clave; las reglas de ciclo de vida deben gestionarse manualmente.
+
+### Opción B — Versionado nativo de S3
+
+Una sola clave S3 por documento; S3 rastrea el historial binario automáticamente vía IDs de versión.
+
+**Fortalezas:** S3 gestiona la pila de versiones automáticamente.
+**Debilidades:** los IDs de versión de S3 son cadenas opacas, no enteros secuenciales — deben correlacionarse con `versionNumber` vía la base de datos.
+
+### Decisión
+
+**Opción A — Claves S3 personalizadas por versión.** La ruta versionada es explícita y direccionable de forma independiente. Evita depender de la opacidad de los IDs de versión de S3 y facilita la gestión de ciclo de vida por versión.
+
+---
+
+## Modelo de almacenamiento
 
 ### S3
 
@@ -87,57 +85,56 @@ A single S3 key per document; S3 tracks the binary history automatically via ver
 {tenantId}/documents/{documentId}/v{versionNumber}.{ext}.metadata.json
 ```
 
-`{ext}` is derived server-side from the upload's validated `contentType` — see the supported-formats allow-list in [ADR-005](005-upload-strategy.md#chosen-approach) (`.pdf`, `.md`, `.docx`, etc.), not assumed to be `.pdf`.
+`{ext}` se deriva del lado del servidor a partir del `contentType` validado (ver [ADR-005](005-upload-strategy.md#enfoque-elegido)) — nunca se asume `.pdf`.
 
-### DynamoDB
+### Aurora PostgreSQL
 
-**Document group record** (one per `documentId`):
+Ver [ADR-008](008-data-storage-strategy.md) para el esquema completo. Resumen relevante para versionado:
 
-```
-PK: TENANT#{tenantId}
-SK: DOCUMENT#{documentId}
-─────────────────────────────────────
-documentId:      string
-tenantId:        string
-documentType:    string
-latestVersion:   number
-createdAt:       ISO 8601
-updatedAt:       ISO 8601
-```
+```sql
+-- Registro de grupo de documento (uno por documento)
+documentos (
+  id             uuid primary key,
+  empresa_id     uuid not null,
+  proceso_id     uuid not null,
+  tipo           text,        -- categoría del documento dentro del proceso (contrato, escrito, prueba, comunicación, otro)
+  latest_version int not null default 0,
+  creado_en      timestamptz,
+  actualizado_en timestamptz
+)
 
-**Version record** (one per upload):
-
-```
-PK: TENANT#{tenantId}
-SK: DOCUMENT#{documentId}#VERSION#{zero-padded versionNumber}
-─────────────────────────────────────
-documentId:      string
-versionNumber:   number
-contentType:     string  (validated MIME type — see ADR-005 supported-formats allow-list)
-s3Key:           string  ({tenantId}/documents/{documentId}/v{n}.{ext})
-sha256:          string  (hex-encoded SHA-256 of the uploaded file's bytes)
-status:          PENDING | COMPLETED | REJECTED | DUPLICATE
-fields:          map<string, string>  (extracted fields — absent if PENDING/REJECTED/DUPLICATE)
-diffFromPrevious: JSON Patch array    (absent for v1 or if DUPLICATE)
-processedAt:     ISO 8601
+-- Registro de versión (uno por subida)
+documento_versiones (
+  id                 uuid primary key,
+  documento_id       uuid references documentos(id),
+  version_numero     int not null,
+  content_type       text not null,   -- MIME type validado, ver lista de ADR-005
+  s3_key             text not null,   -- {tenantId}/documents/{documentId}/v{n}.{ext}
+  sha256             text not null,
+  estado             text not null,   -- PENDING | COMPLETED | REJECTED | DUPLICATE
+  campos             jsonb,           -- campos extraídos — ausente si PENDING/REJECTED/DUPLICATE
+  diff_previo        jsonb,           -- JSON Patch — ausente para v1 o si DUPLICATE
+  procesado_en       timestamptz
+)
 ```
 
-The SK uses zero-padded version numbers (`VERSION#0001`) to enable chronological DynamoDB range queries without a GSI.
+Un índice sobre `(documento_id, version_numero)` reemplaza la necesidad del zero-padding de claves de ordenamiento que se usaba en el diseño anterior basado en DynamoDB.
 
 ---
 
-## API Changes
+## Cambios de API
 
 ### `POST /documents/prepare`
 
-Gains an optional `documentId` parameter:
+Incluye un parámetro opcional `documentId`:
 
-| Field | Type | Required | Description |
+| Campo | Tipo | Requerido | Descripción |
 |---|---|---|---|
-| `documentType` | string (enum) | Yes | One of: `Invoice`, `Contract`, `Report`, `Cv` |
-| `documentId` | string (UUID) | No | If provided, creates a new version of an existing document. If absent, starts a new document (v1). |
+| `documentId` | string (UUID) | No | Si se provee, crea una nueva versión de un documento existente. Si está ausente, inicia un nuevo documento (v1). |
+| `procesoId` | string (UUID) | Sí | Proceso al que pertenece el documento |
+| `tipoDocumento` | string | No | Categoría libre del documento dentro del proceso (p. ej. "contrato", "escrito", "prueba") |
 
-**Response — `201 Created`**
+**Respuesta — `201 Created`**
 
 ```json
 {
@@ -148,69 +145,47 @@ Gains an optional `documentId` parameter:
 }
 ```
 
-### `POST /documents/process`
+### Nuevos endpoints
 
-Response gains `versionNumber` and `diffFromPrevious`:
-
-```json
-{
-  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "versionNumber": 2,
-  "tenantId": "tenant-abc",
-  "documentType": "Invoice",
-  "status": "COMPLETED",
-  "fields": { "total_amount": "1800.00", "due_date": "2026-08-01" },
-  "diffFromPrevious": [
-    { "op": "replace", "path": "/total_amount", "value": "1800.00" },
-    { "op": "replace", "path": "/due_date", "value": "2026-08-01" }
-  ],
-  "processedAt": "2026-07-01T10:20:00Z"
-}
-```
-
-If the upload is a duplicate (SHA matches latest version), `status` is `DUPLICATE` and `fields` is omitted — the client is referred to the existing version.
-
-### New endpoints
-
-| Method | Route | Description |
+| Método | Ruta | Descripción |
 |---|---|---|
-| `GET` | `/documents/{documentId}/versions` | Lists all versions for a document (summary, no fields) |
-| `GET` | `/documents/{documentId}/versions/{versionNumber}` | Returns full fields for a specific version |
+| `GET` | `/documents/{documentId}/versions` | Lista todas las versiones de un documento (resumen, sin campos) |
+| `GET` | `/documents/{documentId}/versions/{versionNumber}` | Devuelve los campos completos de una versión específica |
+
+Ver `api-reference.md` para la superficie completa de la API en el dominio actual (Procesos, Clientes, Documentos, Usuarios, IA).
 
 ---
 
-## Processing Flow Changes
+## Flujo de procesamiento
 
 ```mermaid
 flowchart TD
-    A["SQS message consumed\nby Worker Lambda"] --> B["GuardDuty scan gate\n(see ADR-004)"]
-    B --> C["Compute SHA-256\nof PDF bytes from S3"]
-    C --> D{SHA matches\nlatest version?}
-    D -->|Yes — duplicate| E["Write DUPLICATE record\nReturn existing fields"]
-    D -->|No — new content| F["Run OCR + Bedrock extraction\nsame as current flow"]
-    F --> G["Fetch previous version fields\nfrom DynamoDB"]
-    G --> H{Previous version\nexists?}
-    H -->|No — v1| I["Write COMPLETED record\nno diff"]
-    H -->|Yes| J["Compute JSON Patch diff\nfields v_prev → fields v_new"]
-    J --> K["Write COMPLETED record\nfields + diff stored"]
-    I --> L["Return ExtractionResult\nwith versionNumber"]
-    K --> L
+    A["Evento de SQS consumido\npor la Lambda Processor\n(ver ADR-011)"] --> B["Calcular SHA-256\nde los bytes del archivo desde S3"]
+    B --> C{"¿El SHA coincide\ncon la última versión?"}
+    C -->|Sí — duplicado| D["Escribir registro DUPLICATE\nDevolver campos existentes"]
+    C -->|No — contenido nuevo| E["Ejecutar OCR + extracción Bedrock\n(ver ADR-003)"]
+    E --> F["Obtener campos de la versión\nanterior desde Aurora"]
+    F --> G{"¿Existe versión\nanterior?"}
+    G -->|No — v1| H["Escribir registro COMPLETED\nsin diff"]
+    G -->|Sí| I["Calcular diff JSON Patch\ncampos v_anterior → v_nueva"]
+    I --> J["Escribir registro COMPLETED\ncampos + diff almacenados"]
+    H --> K["Retornar ExtractionResult\ncon versionNumber"]
+    J --> K
 ```
 
 ---
 
-## Consequences
+## Consecuencias
 
-- **DynamoDB:** two item types per document (group record + version records). SK zero-padding supports range queries without a GSI.
-- **IAM:** no new permissions required beyond existing S3 and DynamoDB access.
-- **S3 key convention** changes from `{tenantId}/{year}/{month}/{documentId}.pdf` to `{tenantId}/documents/{documentId}/v{n}.pdf`. Existing data migration required for documents uploaded before this change.
-- **`POST /documents/prepare`:** `documentId` becomes caller-supplied for new versions; the backend validates that the caller's `tenantId` owns the referenced `documentId`.
-- **JSON Patch library:** a lightweight RFC 6902 implementation is required in the Lambda (e.g., `JsonPatch.Net` for .NET).
+- **Aurora:** dos tipos de registro (documento + versiones), con clave foránea entre ambos y un índice compuesto para ordenar versiones.
+- **IAM:** sin permisos nuevos más allá del acceso existente a S3 y a Aurora (vía Secrets Manager para las credenciales de conexión).
+- **Convención de clave S3** se mantiene sin cambios: `{tenantId}/documents/{documentId}/v{n}.{ext}`.
+- **Librería JSON Patch:** se requiere una implementación ligera de RFC 6902 en la Lambda (p. ej. `JsonPatch.Net` para .NET).
 
 ---
 
-## Open Questions
+## Preguntas abiertas
 
-- What is the maximum number of versions per document? Should there be a cap (e.g., 100) to bound DynamoDB item count and S3 storage?
-- Should old versions be automatically archived to S3 Glacier after a configurable retention period?
-- Should the `GET /documents/{documentId}/versions/{from}/diff/{to}` endpoint support arbitrary version pairs, or only consecutive versions?
+- ¿Cuál es el número máximo de versiones por documento? ¿Debería existir un tope para acotar el crecimiento de la tabla y del almacenamiento en S3?
+- ¿Deberían archivarse automáticamente las versiones antiguas a S3 Glacier tras un período de retención configurable?
+- ¿El endpoint de diff entre versiones debería soportar pares de versiones arbitrarios, o solo versiones consecutivas?

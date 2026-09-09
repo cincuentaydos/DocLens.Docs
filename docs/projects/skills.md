@@ -1,39 +1,39 @@
 # DocLens.Skills
 
-Plugin marketplace for **GitHub Copilot** and **Claude Code** — production-ready development automation skills for the DocLens ecosystem.
+Marketplace de plugins para **GitHub Copilot** y **Claude Code** — skills de automatización de desarrollo listas para producción, para el ecosistema DocLens.
 
-**Repository:** [`DocLens.Skills`](https://github.com/cincuentaydos/DocLens.Skills)
+**Repositorio:** [`DocLens.Skills`](https://github.com/cincuentaydos/DocLens.Skills)
 
-## Purpose
+## Propósito
 
-Automates repetitive processes in the development workflow: Pull Request generation, GitHub issue creation, and CI/CD pre-checks. Skills are installable as a plugin in both GitHub Copilot and Claude Code.
+Automatiza procesos repetitivos del flujo de desarrollo: generación de Pull Requests, creación de issues de GitHub, y pre-checks de CI/CD. Las skills se instalan como plugin tanto en GitHub Copilot como en Claude Code.
 
 ## Plugin
 
-| Plugin | Version | Description |
+| Plugin | Versión | Descripción |
 |---|---|---|
-| `doclens-plugins` | 1.0.0 | Automation and validators for DocLens |
+| `doclens-plugins` | 1.0.0 | Automatización y validadores para DocLens |
 
-## Available Skills
+## Skills Disponibles
 
-| Skill | Description |
+| Skill | Descripción |
 |---|---|
-| `doclens-issues-generator` | Generates repo-level GitHub issues following project conventions |
-| `doclens-project-issues-generator` | Generates issues scoped to an org-level GitHub Project board (Kanban) |
-| `doclens-pullrequest-generator` | Generates pull request descriptions and pre-checks |
+| `doclens-issues-generator` | Genera issues de GitHub a nivel de repositorio siguiendo las convenciones del proyecto |
+| `doclens-project-issues-generator` | Genera issues acotados a un tablero de GitHub Project a nivel de organización (Kanban) |
+| `doclens-pullrequest-generator` | Genera descripciones de pull request y pre-checks |
 
-Each skill is defined in a `SKILL.md` file under:
+Cada skill está definida en un archivo `SKILL.md` bajo:
 
 ```
 plugins/doclens-plugins/skills/<skill-name>/SKILL.md
 ```
 
-## Repository Structure
+## Estructura del Repositorio
 
 ```
 .github/
   agents/
-    cincuentaydos-dev.agent.md   # custom agent definition
+    cincuentaydos-dev.agent.md   # definición de agente personalizado
   ISSUE_TEMPLATE/
     bug_report.md
     feature_request.md
@@ -51,35 +51,35 @@ plugins/
       doclens-pullrequest-generator/SKILL.md
 ```
 
-## Installation
+## Instalación
 
 === "Claude Code"
 
     ```bash
-    # Register the marketplace (one time)
+    # Registrar el marketplace (una sola vez)
     claude plugin marketplace add https://github.com/cincuentaydos/DocLens.Skills.git
 
-    # Install the plugin
+    # Instalar el plugin
     claude plugin install doclens-plugins@doclens-skills
 
-    # Verify
+    # Verificar
     claude plugin list
     ```
 
 === "GitHub Copilot"
 
     ```bash
-    # Register the marketplace (one time)
+    # Registrar el marketplace (una sola vez)
     copilot plugin marketplace add https://github.com/cincuentaydos/DocLens.Skills.git
 
-    # Install the plugin
+    # Instalar el plugin
     copilot plugin install doclens-plugins@doclens-skills
 
-    # Verify
+    # Verificar
     copilot plugin list
     ```
 
-## Updating
+## Actualización
 
 === "Claude Code"
 
@@ -93,9 +93,9 @@ plugins/
     copilot plugin update doclens-plugins
     ```
 
-## Integrating with Custom Agents
+## Integración con Agentes Personalizados
 
-Skills can be wired into VS Code Copilot or Claude Code `.agent.md` files. See:
+Las skills pueden integrarse en archivos `.agent.md` de VS Code Copilot o Claude Code. Ver:
 `docs/integrating-skills-with-agents.md`
 
-The repo includes a reference agent definition at `.github/agents/cincuentaydos-dev.agent.md`.
+El repositorio incluye una definición de agente de referencia en `.github/agents/cincuentaydos-dev.agent.md`.

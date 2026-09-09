@@ -1,26 +1,133 @@
-# API Reference
+# Referencia de API
 
-All endpoints are served via **Amazon API Gateway (HTTP API v2)** and require a valid Cognito JWT in the `Authorization` header.
+Todos los endpoints se sirven vía **Amazon API Gateway** y requieren un JWT válido de Cognito en el encabezado `Authorization`.
 
-## Authentication
+## Autenticación
 
-Every request must include a Bearer token issued by Amazon Cognito:
+Cada solicitud debe incluir un token Bearer emitido por Amazon Cognito:
 
 ```
 Authorization: Bearer <id-token>
 ```
 
-The token must carry the `custom:tenantId` claim. Requests with a missing or empty `tenantId` are rejected by `TenantMiddleware` with `401 Unauthorized` before any handler runs.
+El token debe llevar el claim `custom:tenantId`. Solicitudes con un `tenantId` ausente o vacío son rechazadas por el middleware de tenant con `401 Unauthorized` antes de que corra cualquier handler.
+
+Además del tenant, cada solicitud resuelve el **tipo de usuario** autenticado (`interno_admin`, `interno`, o `cliente`) y, para usuarios de tipo `cliente`, el `clienteId` al que pertenecen — ver `tenant-onboarding.md`.
 
 ---
 
-## Endpoints
+## Procesos
+
+### `POST /procesos`
+
+Crea un nuevo proceso legal. Solo usuarios internos.
+
+**Solicitud**
+
+```http
+POST /procesos
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "titulo": "Contrato de arrendamiento — Acme Corp",
+  "clienteId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
+}
+```
+
+**Respuesta — `201 Created`**
+
+```json
+{
+  "id": "9c858901-8a57-4791-81fe-4c455b099bc9",
+  "empresaId": "tenant-abc",
+  "clienteId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "titulo": "Contrato de arrendamiento — Acme Corp",
+  "estado": "ABIERTO",
+  "creadoEn": "2026-09-07T10:00:00Z"
+}
+```
+
+### `PATCH /procesos/{procesoId}`
+
+Actualiza un proceso existente (título, estado). Solo usuarios internos con permiso sobre el proceso.
+
+### `GET /procesos/{procesoId}`
+
+Consulta el estado y los datos de un proceso. Usuarios internos con permiso, o usuarios de cliente cuyo `clienteId` está asociado al proceso (ver [Permisos](#permisos-y-auditoria)).
+
+**Respuesta — `200 OK`**
+
+```json
+{
+  "id": "9c858901-8a57-4791-81fe-4c455b099bc9",
+  "clienteId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "titulo": "Contrato de arrendamiento — Acme Corp",
+  "estado": "ABIERTO",
+  "creadoEn": "2026-09-07T10:00:00Z",
+  "actualizadoEn": "2026-09-07T10:00:00Z"
+}
+```
+
+### `GET /procesos`
+
+Lista los procesos visibles para el usuario autenticado — todos los del tenant para usuarios internos; solo los asociados a su `clienteId` para usuarios de cliente.
+
+**Errores comunes**
+
+| Estado | Condición |
+|---|---|
+| `401 Unauthorized` | JWT ausente o inválido |
+| `403 Forbidden` | El usuario no tiene permiso sobre el proceso solicitado |
+| `404 Not Found` | El `procesoId` no existe o no pertenece al tenant autenticado |
+
+---
+
+## Clientes
+
+### `POST /clientes`
+
+Crea un nuevo cliente del despacho. Solo usuarios internos admin.
+
+```http
+POST /clientes
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "nombre": "Acme Corp" }
+```
+
+### `GET /clientes/{clienteId}`
+
+Consulta un cliente y sus procesos asociados.
+
+### `POST /clientes/{clienteId}/procesos/{procesoId}`
+
+Asocia un proceso existente a un cliente.
+
+### `POST /clientes/{clienteId}/usuarios`
+
+Crea un usuario de tipo `cliente`, vinculado a ese `clienteId`, para que pueda consultar sus procesos. Solo usuarios internos admin.
+
+```http
+POST /clientes/3fa85f64-5717-4562-b3fc-2c963f66afa6/usuarios
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "email": "contacto@acme.com" }
+```
+
+Internamente, este endpoint provisiona el usuario en Cognito con `custom:tenantId` y un claim adicional que lo vincula al `clienteId` — ver `tenant-onboarding.md`.
+
+---
+
+## Documentos
 
 ### `POST /documents/prepare`
 
-Generates a pre-signed S3 PUT URL for direct document upload. Creates a `PENDING` record in DynamoDB.
+Genera una URL S3 PUT prefirmada para la subida directa de un documento asociado a un proceso. Crea un registro `PENDING` en Aurora. Ver [ADR-005](adrs/005-upload-strategy.md) para el mecanismo completo.
 
-**Request**
+**Solicitud**
 
 ```http
 POST /documents/prepare
@@ -28,279 +135,244 @@ Authorization: Bearer <token>
 Content-Type: application/json
 
 {
-  "documentType": "Invoice",
+  "procesoId": "9c858901-8a57-4791-81fe-4c455b099bc9",
+  "tipoDocumento": "contrato",
+  "contentType": "application/pdf",
   "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 }
 ```
 
-| Field | Type | Required | Description |
+| Campo | Tipo | Requerido | Descripción |
 |---|---|---|---|
-| `documentType` | string (enum) | Yes | One of: `Invoice`, `Contract`, `Report`, `Cv` |
-| `documentId` | string (UUID) | No | If provided, creates a new version of an existing document. If absent, starts a new document (v1). |
+| `procesoId` | string (UUID) | Sí | Proceso al que pertenece el documento |
+| `tipoDocumento` | string | No | Categoría libre (p. ej. "contrato", "escrito", "prueba", "comunicación") |
+| `contentType` | string | Sí | MIME type — ver la lista de formatos soportados en [ADR-005](adrs/005-upload-strategy.md#formatos-soportados-lista-permitida) |
+| `documentId` | string (UUID) | No | Si se provee, crea una nueva versión de un documento existente |
 
-**Response — `201 Created`**
+**Respuesta — `201 Created`**
 
 ```json
 {
   "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "versionNumber": 2,
+  "versionNumber": 1,
   "uploadUrl": "https://s3.amazonaws.com/...",
-  "expiresAt": "2026-07-01T10:15:00Z"
+  "expiresAt": "2026-09-07T10:15:00Z"
 }
 ```
 
-| Field | Description |
-|---|---|
-| `documentId` | Stable identifier for this document across all versions |
-| `versionNumber` | Version number for this upload — `1` for new documents, incremented for subsequent versions |
-| `uploadUrl` | Pre-signed S3 PUT URL. Valid for 15 minutes. Accepts `application/pdf` only |
-| `expiresAt` | UTC timestamp when `uploadUrl` expires |
+El frontend hace PUT del archivo directamente a `uploadUrl`. **No existe una llamada `/process`** — el procesamiento se dispara automáticamente cuando GuardDuty confirma que el archivo está limpio (ver [ADR-011](adrs/011-document-processing-trigger.md)).
 
-**Error responses**
+### `GET /procesos/{procesoId}/documentos`
 
-| Status | Condition |
-|---|---|
-| `401 Unauthorized` | Missing or invalid JWT, or `tenantId` claim absent |
-| `400 Bad Request` | Invalid or missing `documentType` |
-| `403 Forbidden` | `documentId` provided but does not belong to the authenticated tenant |
-| `404 Not Found` | `documentId` provided but does not exist |
-
----
-
-### `POST /documents/process`
-
-Enqueues the document for asynchronous OCR and semantic extraction. Returns `202 Accepted` immediately — the client polls `GET /documents/{documentId}/versions/{versionNumber}` for the result. GuardDuty gate, SHA check, and extraction are handled internally by the worker Lambda.
-
-**Request**
-
-```http
-POST /documents/process
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "versionNumber": 2,
-  "s3Key": "tenant-abc/documents/3fa85f64-5717-4562-b3fc-2c963f66afa6/v2.pdf",
-  "documentType": "Invoice"
-}
-```
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `documentId` | string (UUID) | Yes | Returned by `POST /documents/prepare` |
-| `versionNumber` | number | Yes | Returned by `POST /documents/prepare` |
-| `s3Key` | string | Yes | S3 object key of the uploaded file — must match `{tenantId}/documents/{documentId}/v{versionNumber}.pdf` |
-| `documentType` | string (enum) | Yes | One of: `Invoice`, `Contract`, `Report`, `Cv` |
-
-!!! danger "S3 key tenant validation"
-    The Lambda **must** verify that the `s3Key` prefix matches the `tenantId` resolved from the JWT before reading the object. A client that passes an `s3Key` belonging to another tenant must receive `403 Forbidden`. This check is the last line of defence against cross-tenant data access at the processing layer.
-
-**Response — `202 Accepted`**
-
-```json
-{
-  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "versionNumber": 2
-}
-```
-
-The extraction result is not included in this response. Poll `GET /documents/{documentId}/versions/{versionNumber}` until `status` is no longer `PENDING`.
-
-**Error responses**
-
-| Status | Condition |
-|---|---|
-| `401 Unauthorized` | Missing or invalid JWT, or `tenantId` claim absent |
-| `400 Bad Request` | Missing required fields or `s3Key` does not match expected pattern |
-| `403 Forbidden` | `s3Key` prefix does not match the authenticated tenant |
-
----
+Lista los documentos de un proceso (resumen, última versión de cada uno).
 
 ### `GET /documents/{documentId}/versions`
 
-Lists all versions of a document in reverse chronological order (latest first).
+Lista todas las versiones de un documento.
 
-**Request**
+### `GET /documents/{documentId}/versions/{versionNumber}`
 
-```http
-GET /documents/3fa85f64-5717-4562-b3fc-2c963f66afa6/versions
-Authorization: Bearer <token>
-```
+Devuelve los campos extraídos y el diff de una versión específica.
 
-**Response — `200 OK`**
+**Respuesta — `200 OK`**
 
 ```json
 {
   "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "documentType": "Invoice",
-  "latestVersion": 2,
-  "versions": [
+  "versionNumber": 2,
+  "procesoId": "9c858901-8a57-4791-81fe-4c455b099bc9",
+  "tipoDocumento": "contrato",
+  "status": "COMPLETED",
+  "sha256": "e3b0c44298fc1c149afb...",
+  "fields": {
+    "partes": "Acme Corp, Globex S.A.",
+    "fecha_vigencia": "2026-01-01",
+    "fecha_vencimiento": "2027-01-01"
+  },
+  "diffFromPrevious": [
+    { "op": "replace", "path": "/fecha_vencimiento", "value": "2027-01-01" }
+  ],
+  "processedAt": "2026-09-07T10:20:00Z"
+}
+```
+
+**Errores comunes**
+
+| Estado | Condición |
+|---|---|
+| `401 Unauthorized` | JWT ausente o inválido |
+| `400 Bad Request` | `contentType` no soportado, o campos requeridos ausentes |
+| `403 Forbidden` | El usuario no tiene permiso sobre el proceso, o el `documentId` no pertenece al tenant autenticado |
+| `404 Not Found` | `documentId` o `versionNumber` no existe |
+
+!!! tip "Estrategia de sondeo"
+    Empezar a sondear después de 2 segundos. Reducir a intervalos de 5 segundos tras 10 segundos. Tope de 10 segundos. Mostrar un error al usuario si el estado sigue en `PENDING` después de 5 minutos — indica un fallo del worker; revisar la DLQ de SQS.
+
+---
+
+## Usuarios
+
+### `POST /usuarios`
+
+Crea un usuario interno (`interno_admin` o `interno`). Solo usuarios internos admin.
+
+```http
+POST /usuarios
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "email": "abogada@despacho.com", "tipo": "interno" }
+```
+
+| Campo | Tipo | Requerido | Descripción |
+|---|---|---|---|
+| `email` | string | Sí | Correo del usuario |
+| `tipo` | string (enum) | Sí | `interno_admin` o `interno` |
+
+### `GET /usuarios`
+
+Lista los usuarios internos del tenant. Solo usuarios internos admin.
+
+### `PATCH /usuarios/{usuarioId}`
+
+Actualiza el tipo de un usuario interno (promover/degradar admin) o desactivarlo.
+
+---
+
+## Permisos y Auditoría
+
+### `POST /procesos/{procesoId}/permisos`
+
+Otorga a un usuario (interno o de cliente) acceso a un proceso específico.
+
+```http
+POST /procesos/9c858901-8a57-4791-81fe-4c455b099bc9/permisos
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "usuarioId": "...", "nivel": "lectura" }
+```
+
+### `GET /audit-log`
+
+Devuelve el registro de auditoría de accesos — quién consultó qué proceso/documento y cuándo. Solo usuarios internos admin.
+
+```json
+{
+  "entradas": [
     {
-      "versionNumber": 2,
-      "status": "COMPLETED",
-      "sha256": "e3b0c44298fc1c149afb...",
-      "processedAt": "2026-07-01T10:20:00Z"
-    },
-    {
-      "versionNumber": 1,
-      "status": "COMPLETED",
-      "sha256": "a87ff679a2f3e71d9181...",
-      "processedAt": "2026-06-15T09:05:00Z"
+      "usuarioId": "...",
+      "accion": "CONSULTA_PROCESO",
+      "recurso": "proceso:9c858901-8a57-4791-81fe-4c455b099bc9",
+      "resultado": "PERMITIDO",
+      "creadoEn": "2026-09-07T09:00:00Z"
     }
   ]
 }
 ```
 
-**Error responses**
-
-| Status | Condition |
-|---|---|
-| `401 Unauthorized` | Missing or invalid JWT |
-| `403 Forbidden` | Document does not belong to the authenticated tenant |
-| `404 Not Found` | `documentId` does not exist |
-
 ---
 
-### `GET /documents/{documentId}/versions/{versionNumber}`
+## Inteligencia Artificial
 
-Returns the full extracted fields and diff for a specific version.
+Ambos endpoints siguen el flujo explícito descrito en [ADR-012](adrs/012-no-autonomous-agent.md): autorización → retrieval en Bedrock Knowledge Bases (filtrado por `empresa_id` + `procesoId`) → generación con Claude → respuesta con fuentes citadas.
 
-**Request**
+### `POST /procesos/{procesoId}/consultas`
+
+Responde una pregunta en el contexto de un proceso.
 
 ```http
-GET /documents/3fa85f64-5717-4562-b3fc-2c963f66afa6/versions/2
+POST /procesos/9c858901-8a57-4791-81fe-4c455b099bc9/consultas
 Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "pregunta": "¿Cuál es la fecha de vencimiento del contrato de arrendamiento?" }
 ```
 
-**Response — `200 OK`**
+**Respuesta — `200 OK`**
 
 ```json
 {
-  "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "versionNumber": 2,
-  "tenantId": "tenant-abc",
-  "documentType": "Invoice",
-  "status": "COMPLETED",
-  "sha256": "e3b0c44298fc1c149afb...",
-  "fields": {
-    "issuer": "Acme Corp",
-    "total_amount": "1800.00"
-  },
-  "diffFromPrevious": [
-    { "op": "replace", "path": "/total_amount", "value": "1800.00" }
-  ],
-  "processedAt": "2026-07-01T10:20:00Z"
+  "respuesta": "El contrato de arrendamiento vence el 2027-01-01.",
+  "fuentes": [
+    { "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "versionNumber": 2 }
+  ]
 }
 ```
 
-**Error responses**
+### `POST /procesos/{procesoId}/borradores`
 
-| Status | Condition |
+Genera un primer borrador de documento (comunicación, escrito) a partir del contexto del proceso.
+
+```http
+POST /procesos/9c858901-8a57-4791-81fe-4c455b099bc9/borradores
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "tipo": "carta_requerimiento", "instrucciones": "Solicitar el pago pendiente antes del 30 de septiembre" }
+```
+
+**Respuesta — `200 OK`**
+
+```json
+{
+  "borrador": "Estimados señores de Globex S.A. ...",
+  "fuentes": [
+    { "documentId": "3fa85f64-5717-4562-b3fc-2c963f66afa6", "versionNumber": 2 }
+  ]
+}
+```
+
+**Errores comunes**
+
+| Estado | Condición |
 |---|---|
-| `401 Unauthorized` | Missing or invalid JWT |
-| `403 Forbidden` | Document does not belong to the authenticated tenant |
-| `404 Not Found` | `documentId` or `versionNumber` does not exist |
+| `401 Unauthorized` | JWT ausente o inválido |
+| `403 Forbidden` | El usuario no tiene permiso sobre el proceso consultado |
+| `422 Unprocessable Entity` | La base de conocimiento no tiene contenido indexado para este proceso |
 
 ---
 
-## Extracted Fields by Document Type
+## Flujo de Integración del Cliente
 
-The `fields` object in the `POST /documents/process` response contains different keys depending on `documentType`. All values are strings. Missing fields are returned as empty strings.
+=== "Documento nuevo (v1)"
 
-### `Invoice`
+    ```
+    1. POST /documents/prepare  { procesoId, contentType, tipoDocumento }
+       → recibe { documentId, versionNumber: 1, uploadUrl }
 
-| Field | Description |
-|---|---|
-| `issuer` | Name of the issuing company |
-| `recipient` | Name of the recipient company |
-| `invoice_number` | Invoice identifier |
-| `issue_date` | Date the invoice was issued |
-| `due_date` | Payment due date |
-| `total_amount` | Total amount due |
-| `currency` | Currency code (e.g. `EUR`, `USD`) |
-| `line_items_summary` | Free-text summary of line items |
+    2. PUT {uploadUrl}  (directo a S3 — evita Lambda)
+       → 200 OK de S3
 
-### `Contract`
+    3. GuardDuty escanea → EventBridge → SQS → Lambda Processor
+       (sin llamada adicional del cliente — ver ADR-011)
 
-| Field | Description |
-|---|---|
-| `parties` | Names of the contracting parties |
-| `effective_date` | Date the contract takes effect |
-| `expiry_date` | Contract expiry date |
-| `governing_law` | Jurisdiction |
-| `key_obligations_summary` | Free-text summary of key obligations |
+    4. sondear GET /documents/{documentId}/versions/1
+       hasta status ≠ "PENDING"
+       → COMPLETED : campos disponibles
+       → REJECTED  : archivo marcado por GuardDuty
+    ```
 
-### `Report`
+=== "Nueva versión de un documento existente"
 
-| Field | Description |
-|---|---|
-| `title` | Report title |
-| `author` | Author name(s) |
-| `date` | Report date |
-| `summary` | Executive summary |
-| `key_findings` | Free-text summary of key findings |
+    ```
+    1. POST /documents/prepare  { procesoId, contentType, documentId }
+       → recibe { documentId, versionNumber: 2, uploadUrl }
 
-### `Cv`
+    2. PUT {uploadUrl}  (directo a S3 — evita Lambda)
+       → 200 OK de S3
 
-| Field | Description |
-|---|---|
-| `full_name` | Candidate full name |
-| `email` | Email address |
-| `phone` | Phone number |
-| `current_role` | Current or most recent job title |
-| `skills` | Comma-separated skills |
-| `education_summary` | Education background summary |
-| `experience_summary` | Work experience summary |
+    3. GuardDuty escanea → EventBridge → SQS → Lambda Processor
+
+    4. sondear GET /documents/{documentId}/versions/2
+       hasta status ≠ "PENDING"
+       → COMPLETED  : campos y diffFromPrevious disponibles
+       → DUPLICATE  : contenido sin cambios — referirse a la versión anterior
+       → REJECTED   : archivo marcado por GuardDuty
+    ```
 
 ---
 
-## Client Integration Flow
+## Agregar un Nuevo Tipo de Documento
 
-=== "New document (v1)"
-
-    ```
-    1. POST /documents/prepare  { documentType }
-       → receive { documentId, versionNumber: 1, uploadUrl }
-
-    2. PUT {uploadUrl}  (direct S3 — bypasses Lambda)
-       → 200 OK from S3
-
-    3. POST /documents/process  { documentId, versionNumber: 1, s3Key, documentType }
-       → 202 Accepted
-
-    4. poll GET /documents/{documentId}/versions/1
-       until status ≠ "PENDING"
-       → COMPLETED : fields available
-       → REJECTED  : file flagged by GuardDuty
-    ```
-
-=== "New version of existing document"
-
-    ```
-    1. POST /documents/prepare  { documentType, documentId }
-       → receive { documentId, versionNumber: 2, uploadUrl }
-
-    2. PUT {uploadUrl}  (direct S3 — bypasses Lambda)
-       → 200 OK from S3
-
-    3. POST /documents/process  { documentId, versionNumber: 2, s3Key, documentType }
-       → 202 Accepted
-
-    4. poll GET /documents/{documentId}/versions/2
-       until status ≠ "PENDING"
-       → COMPLETED  : fields and diffFromPrevious available
-       → DUPLICATE  : content unchanged — refer to previous version
-       → REJECTED   : file flagged by GuardDuty
-    ```
-
-!!! tip "Polling strategy"
-    Start polling after 2 seconds. Back off to 5-second intervals after 10 seconds. Cap at 10-second intervals. Surface an error to the user if status remains `PENDING` after 5 minutes — this indicates a worker failure; check the SQS DLQ.
-
----
-
-## Adding a New Document Type
-
-1. Add the variant to `Models/DocumentType.cs`.
-2. Add a matching `case` in `BedrockSemanticAnalysisService.BuildPrompt` listing the fields to extract.
-3. Document the new fields in the **Extracted Fields** section above.
+`tipoDocumento` es un campo de texto libre en el dominio actual (no un enum cerrado) — no requiere cambios de código para agregar una nueva categoría. Si en el futuro se necesita una plantilla de extracción específica por tipo, el prompt de `ISemanticAnalysisService` puede ramificarse por `tipoDocumento`; hoy el prompt es único y suficientemente general para el dominio legal.

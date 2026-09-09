@@ -1,125 +1,195 @@
-# Architecture
+# Arquitectura
 
-## Tech Stack
+## Stack Tecnológico
 
-| Layer | Technology |
+| Capa | Tecnología |
 |---|---|
-| Compute | AWS Lambda (.NET 10) |
-| API Entry | Amazon API Gateway (HTTP API v2) |
-| Identity | Amazon Cognito (JWT with `custom:tenantId` claim) |
-| OCR | Amazon Textract + PdfPig (hybrid fast path) |
-| AI Analysis | Amazon Bedrock — Claude via `InvokeModel` |
-| RAG | Amazon Bedrock Knowledge Bases (chunking, embedding, retrieval) |
-| Operational DB | Amazon DynamoDB |
-| Document Storage | Amazon S3 |
-| Notifications | Amazon SNS / SQS (post-extraction notifications) |
-| Security | Amazon GuardDuty Malware Protection for S3 (upload scanning) |
-| Observability | Amazon CloudWatch + AWS X-Ray + AWS Lambda Powertools |
-| IaC | Terraform (HCL) — primary; AWS CDK scaffolding present but being phased out |
+| DNS | Amazon Route 53 |
+| CDN / entrada de la app | Amazon CloudFront + AWS WAF + AWS Shield Standard + AWS Certificate Manager (ver [ADR-009](adrs/009-edge-network-strategy.md)) |
+| Identidad | Amazon Cognito (JWT, expuesto directo a internet) |
+| Frontend (hosting) | Amazon S3 (bucket privado, servido vía CloudFront) |
+| Entrada de API | Amazon API Gateway |
+| Cómputo | AWS Lambda (.NET 10) (ver [ADR-010](adrs/010-compute-strategy.md)) |
+| Extracción de texto | Amazon Textract + PdfPig (ruta híbrida) (ver [ADR-003](adrs/003-ocr-strategy.md)) |
+| Análisis de IA | Amazon Bedrock — Claude |
+| RAG | Amazon Bedrock Knowledge Bases (chunking, embedding, retrieval) (ver [ADR-001](adrs/001-rag-strategy.md)) |
+| Base de datos operativa + vector store | Amazon Aurora PostgreSQL Serverless v2 + `pgvector` (ver [ADR-008](adrs/008-data-storage-strategy.md)) |
+| Almacenamiento de documentos | Amazon S3 |
+| Disparo de procesamiento | GuardDuty Malware Protection + EventBridge (ver [ADR-011](adrs/011-document-processing-trigger.md)) |
+| Desacople de carga | Amazon SQS + DLQ |
+| Seguridad de subidas | Amazon GuardDuty Malware Protection for S3 (ver [ADR-004](adrs/004-malware-scanning.md)) |
+| Observabilidad | Amazon CloudWatch + AWS X-Ray |
+| IaC | Terraform (HCL) (ver [ADR-002](adrs/002-iac-strategy.md)) |
+| CI/CD | GitHub Actions + OIDC |
 | Frontend | React 19, TypeScript, Vite, Feature-Sliced Design |
-| Frontend IaC | Terraform (environments: dev / staging / production) |
 
-## Component Map
+## Mapa de Componentes
 
 ```mermaid
 graph TD
-    Client["Tenant Client"]
+    Client["Cliente / Usuario del despacho"]
 
-    Client -->|"HTTPS — API calls"| APIGW["Amazon API Gateway\nHTTP API v2"]
-    Client -->|"PUT — pre-signed URL\ndirect upload, bypasses Lambda"| S3
+    Client -->|"HTTPS"| R53["Amazon Route 53"]
+    R53 --> CF["Amazon CloudFront\n+ WAF + Shield Standard + ACM"]
+    CF -->|"assets estáticos"| S3Front["S3 — Frontend estático"]
+    Client -->|"login/password"| Cognito["Amazon Cognito\nemite JWT"]
 
-    APIGW -->|"JWT validated via Cognito"| Lambda["AWS Lambda .NET 10\nTenantMiddleware · DocumentEndpoints\nExtractionService · OcrService · SemanticService"]
+    CF -->|"HTTPS — llamadas de API"| APIGW["Amazon API Gateway"]
+    Client -->|"PUT — URL prefirmada\nsubida directa, evita Lambda"| S3Docs
 
-    Lambda -->|"OCR"| Textract["Amazon Textract"]
-    Lambda -->|"semantic analysis"| Bedrock["Amazon Bedrock\nClaude via InvokeModel"]
+    APIGW -->|"JWT validado vía Cognito"| Lambda["AWS Lambda .NET 10\nProcesos · Clientes · Usuarios\nDocumentos · Permisos · IA"]
+
+    Lambda --> Aurora[("Aurora PostgreSQL\nServerless v2 + pgvector")]
+    Lambda -->|"consulta autorizada"| Bedrock["Amazon Bedrock\nClaude"]
     Bedrock -.->|"RAG"| KB["Bedrock Knowledge Bases\nchunking · embedding · retrieval"]
+    KB -.-> Aurora
 
-    Lambda -->|"reads scan tag · writes result"| S3["Amazon S3\n{tenantId}/documents/{documentId}/v{n}.pdf"]
-    S3 -->|"auto-scan on upload"| GD["GuardDuty\nMalware Protection for S3"]
+    Lambda -->|"escribe · lee"| S3Docs["Amazon S3 — Documentos\n{tenantId}/documents/{documentId}/v{n}.{ext}"]
+    S3Docs -->|"escaneo automático al subir"| GD["GuardDuty\nMalware Protection for S3"]
+    GD -->|"resultado del escaneo"| EB["Amazon EventBridge\nfiltra solo resultado limpio"]
+    EB --> SQS["Amazon SQS + DLQ"]
+    SQS --> Processor["Lambda Processor\ndetecta formato · OCR · extracción semántica"]
+    Processor --> Textract["Amazon Textract\n+ SNS/SQS + Result Lambda"]
+    Processor --> Aurora
+    Processor -.->|"contenido preparado"| KB
 
-    Lambda --> DDB["Amazon DynamoDB\nPK: TENANT#tenantId\nSK: DOCUMENT#id · DOCUMENT#id#VERSION#n"]
-    Lambda -->|"notifier only"| SQS["Amazon SQS\npost-extraction events"]
+    Lambda --> CW["CloudWatch + X-Ray"]
+    Processor --> CW
 ```
 
-## Multi-Tenancy Model
+## Modelo de Multi-Tenancy
 
-DocLens uses a **logical silo** approach: all tenants share the same infrastructure, but data is partitioned by `tenantId` at every layer.
+DocLens sigue siendo una plataforma **SaaS multi-tenant**: cada despacho de abogados (empresa cliente de DocLens) es un tenant, con datos aislados a nivel lógico. Dentro de cada tenant vive el dominio del negocio del despacho — Clientes, Procesos, Documentos y Usuarios.
 
-| Layer | Isolation key |
+```
+Tenant (empresa / despacho)
+  ├── Usuarios internos (admin / no-admin)
+  ├── Clientes
+  │     └── Usuarios de cliente (consultan sus propios procesos)
+  └── Procesos
+        ├── Documentos (con versiones)
+        └── Permisos (qué usuario accede a qué proceso)
+```
+
+| Capa | Clave de aislamiento |
 |---|---|
-| API / Auth | `custom:tenantId` claim in Cognito JWT |
-| Middleware | `TenantMiddleware` resolves `TenantId` before any handler runs |
-| S3 | Key prefix: `{tenantId}/documents/{documentId}/v{versionNumber}.pdf` |
-| DynamoDB | Partition key: `TENANT#{tenantId}` |
-| Bedrock Knowledge Bases | Metadata filter: `{ "tenantId": "..." }` on every `Retrieve` call |
-| Logs | Structured log field `TenantId` on every log entry |
+| API / Auth | Claim `custom:tenantId` en el JWT de Cognito |
+| Middleware | Resuelve el tenant antes de que corra cualquier handler |
+| S3 | Prefijo de clave: `{tenantId}/documents/{documentId}/v{versionNumber}.{ext}` |
+| Aurora | Columna `empresa_id` en cada tabla (ver [ADR-008](adrs/008-data-storage-strategy.md)) |
+| Bedrock Knowledge Bases | Filtro de metadatos: `{ "empresa_id": "...", "proceso_id": "..." }` en cada llamada `Retrieve` |
+| Logs | Campo estructurado `empresa_id` en cada entrada |
 
-!!! danger "Critical rule"
-    The `tenantId` filter on Knowledge Bases **must never be optional** — it is the only barrier preventing cross-tenant retrieval.
+!!! danger "Regla crítica"
+    El filtro `empresa_id` (y, cuando aplique, `proceso_id`) en Knowledge Bases **nunca debe ser opcional** — es la única barrera contra el acceso cruzado entre tenants y entre procesos de distintos clientes de un mismo despacho.
 
-## Design Principles
+Dentro de un mismo tenant, los **permisos por proceso** determinan qué usuario interno o de cliente puede ver qué caso — ver la tabla `permisos` en [ADR-008](adrs/008-data-storage-strategy.md) y el endpoint de auditoría de accesos en `api-reference.md`.
 
-- **Inside-out design:** core extraction logic is built first; infrastructure wiring is added second.
-- **Interface + implementation pairs:** every service has an interface (`IOcrService`, `ISemanticAnalysisService`, `IDocumentExtractionService`) to enable mocking in tests and future substitution.
-- **Scoped services, singleton AWS clients:** services are registered as `Scoped`; AWS SDK clients are `Singleton` via `AddAWSService<T>`.
-- **Asynchronous extraction (event-driven):** `POST /documents/process` enqueues a job to SQS and returns `202 Accepted` immediately. A separate worker Lambda performs Textract + Bedrock extraction without API Gateway timeout pressure. The client polls `GET /documents/{id}/versions/{n}` for the result.
-- **SQS as processing backbone:** the SQS queue decouples intake from extraction and provides retry isolation via a dead-letter queue. A second SQS queue is used for post-extraction notifications (e.g., email).
+## Principios de Diseño
 
-## OCR Strategy — Hybrid Fast Path
+- **Procesamiento asíncrono dirigido por eventos:** el procesamiento de documentos se dispara cuando GuardDuty confirma que el archivo está limpio — no por una llamada explícita del cliente (ver [ADR-011](adrs/011-document-processing-trigger.md)).
+- **Sin agente autónomo en V1:** el flujo de IA es explícito y orquestado por el backend — autorizar, recuperar de la base de conocimiento, generar con Claude, devolver con fuentes (ver [ADR-012](adrs/012-no-autonomous-agent.md)).
+- **Interfaz + implementación:** cada servicio tiene una interfaz para permitir mocking en pruebas y sustitución futura.
+- **Servicios scoped, clientes de AWS singleton:** los servicios se registran como `Scoped`; los clientes del SDK de AWS son `Singleton` vía `AddAWSService<T>`.
+- **SQS + DLQ como columna vertebral del procesamiento:** desacopla la recepción de eventos del procesamiento pesado y aísla los reintentos.
 
-See [ADR-003](adrs/003-ocr-strategy.md) for the full analysis.
+## Estrategia de OCR — Ruta Híbrida
 
-1. **PdfPig first** — attempts in-process extraction from the PDF byte stream (free, milliseconds, no network call).
-2. **Evaluate result** — if extracted text is below a minimum threshold (~50 characters), the document is treated as image-based.
-3. **Textract fallback** — only invoked when PdfPig yields insufficient text (scanned documents, photos of documents).
+Ver [ADR-003](adrs/003-ocr-strategy.md) para el análisis completo.
 
-## RAG Strategy — Bedrock Knowledge Bases
+1. **PdfPig primero** — intenta la extracción en proceso desde el flujo de bytes del PDF (gratis, milisegundos, sin llamada de red).
+2. **Evaluar el resultado** — si el texto extraído está bajo un umbral mínimo (~50 caracteres), el documento se trata como basado en imagen.
+3. **Textract como respaldo** — solo se invoca cuando PdfPig produce texto insuficiente.
 
-See [ADR-001](adrs/001-rag-strategy.md) for the full analysis.
+## Estrategia de RAG — Bedrock Knowledge Bases
 
-DocLens owns: document intake, OCR, S3 layout, metadata authoring, ingestion job triggering.
-Bedrock Knowledge Bases owns: chunking (semantic strategy), embedding, vector store, index lifecycle.
+Ver [ADR-001](adrs/001-rag-strategy.md) para el análisis completo.
 
-Tenant isolation at the RAG layer is enforced via S3 metadata files and a mandatory `tenantId` filter on every `Retrieve` / `RetrieveAndGenerate` call.
+DocLens es dueño de: ingesta de documentos, OCR, organización en S3, generación de metadatos, disparo del job de ingesta.
+Bedrock Knowledge Bases es dueño de: chunking, embedding, y ciclo de vida del índice, usando Aurora + `pgvector` como vector store (ver [ADR-008](adrs/008-data-storage-strategy.md)).
 
-## Upload Strategy — Pre-signed URL
+## Estrategia de Subida — URL Prefirmada
 
-See [ADR-005](adrs/005-upload-strategy.md) for the full analysis.
+Ver [ADR-005](adrs/005-upload-strategy.md) para el análisis completo.
 
-Clients upload documents directly to S3 using a short-lived pre-signed PUT URL, bypassing Lambda entirely. This avoids the 10 MB API Gateway payload limit and eliminates unnecessary data transfer through the compute layer.
+Los clientes suben documentos directamente a S3 usando una URL PUT prefirmada de corta duración, evitando Lambda por completo.
 
-1. Client calls `POST /documents/prepare` — optionally passes an existing `documentId` to create a new version; receives `{ documentId, versionNumber, uploadUrl }`.
-2. Client PUTs the file directly to S3 using `uploadUrl` (15-minute TTL, `application/pdf` only).
-3. Client calls `POST /documents/process` — intake Lambda enqueues a job to SQS and returns `202 Accepted` immediately.
-4. Worker Lambda consumes the SQS message — handles the GuardDuty gate internally, computes SHA-256, runs extraction, and stores the diff against the previous version.
-5. Client polls `GET /documents/{documentId}/versions/{versionNumber}` until status is no longer `PENDING`.
+1. El cliente llama a `POST /documents/prepare` — recibe `{ documentId, versionNumber, uploadUrl }`.
+2. El cliente hace PUT del archivo directamente a S3 usando `uploadUrl` (TTL de 15 minutos).
+3. GuardDuty escanea el objeto automáticamente.
+4. Si el resultado es limpio, una regla de EventBridge dispara el procesamiento vía SQS — sin llamada adicional del cliente (ver [ADR-011](adrs/011-document-processing-trigger.md)).
+5. El cliente sondea `GET /documents/{documentId}/versions/{versionNumber}` hasta que el estado deja de ser `PENDING`.
 
-## Malware Scanning — GuardDuty
+## Escaneo de Malware — GuardDuty + EventBridge
 
-See [ADR-004](adrs/004-malware-scanning.md) for the full analysis.
+Ver [ADR-004](adrs/004-malware-scanning.md) y [ADR-011](adrs/011-document-processing-trigger.md) para el análisis completo.
 
-GuardDuty Malware Protection for S3 scans every uploaded object automatically. The processing Lambda gates extraction on the `GuardDutyMalwareScanStatus` tag: `CLEAN` proceeds, `THREATS_FOUND` and `UNSCANNABLE` return `422`, and an absent tag (scan still running) returns `409`.
+GuardDuty Malware Protection for S3 escanea automáticamente cada objeto subido. El resultado del escaneo se publica como evento en EventBridge; una regla filtra y reenvía a SQS únicamente los resultados `CLEAN`. Un resultado `THREATS_FOUND` o `UNSCANNABLE` nunca llega a la cola de procesamiento — el registro correspondiente se marca `REJECTED` por una vía separada.
 
-## Document Versioning
+## Versionado de Documentos
 
-See [ADR-007](adrs/007-document-versioning.md) for the full analysis.
+Ver [ADR-007](adrs/007-document-versioning.md) para el análisis completo.
 
-A `documentId` is the stable identifier for a document across all its versions. Each upload creates a new `versionNumber` (sequential integer) under the same `documentId`. The Lambda computes SHA-256 after the GuardDuty scan — identical content is flagged as `DUPLICATE` without re-extracting. After successful extraction, a JSON Patch diff (RFC 6902) against the previous version's fields is computed and stored alongside the full fields in DynamoDB.
+Un `documentId` es el identificador estable de un documento a través de todas sus versiones. Cada subida crea un `versionNumber` secuencial bajo el mismo `documentId`. La Lambda Processor calcula SHA-256 tras el escaneo de GuardDuty — contenido idéntico se marca como `DUPLICATE` sin re-extraer. Tras una extracción exitosa, se calcula y almacena un diff JSON Patch (RFC 6902) contra los campos de la versión anterior, junto con los campos completos, en Aurora.
 
-| Concept | Detail |
-|---|---|
-| Stable ID | `documentId` — chosen at first upload, never changes |
-| Version | `versionNumber` — sequential integer, starts at 1 |
-| Duplicate detection | SHA-256 of PDF bytes compared against latest version |
-| Diff | JSON Patch stored per version — shows what changed in extracted fields |
-| S3 layout | `{tenantId}/documents/{documentId}/v{versionNumber}.pdf` |
-| DynamoDB | Two item types per document: group record + one version record per upload |
+## Base de Datos y Vector Store — Aurora + pgvector
 
-## IaC Strategy
+Ver [ADR-008](adrs/008-data-storage-strategy.md) para el esquema completo.
 
-See [ADR-002](adrs/002-iac-strategy.md) for the full rationale.
+Un único motor, Aurora PostgreSQL Serverless v2, almacena tanto los datos operativos (empresas, usuarios, clientes, procesos, documentos, permisos, auditoría) como el vector store de Bedrock Knowledge Bases (esquema `kb` dedicado, vía `pgvector`).
 
-- **Terraform (HCL)** is the primary IaC tool for all DocLens infrastructure.
-- Terraform state: S3 backend + DynamoDB lock table.
-- Terraform code lives in `infra/terraform/` (Lambda project) and `infra/` (Web template).
-- AWS CDK scaffolding (`infra/src/DocLens.Infra/`) exists from early exploration and is being removed as Terraform coverage grows.
+## IA / RAG — Flujo Explícito sin Agente
+
+Ver [ADR-012](adrs/012-no-autonomous-agent.md) para el análisis completo.
+
+```mermaid
+flowchart LR
+    A["Consulta del usuario"] --> B["Backend valida permiso\nsobre el proceso"]
+    B --> C["Retrieve en Bedrock KB\nfiltrado por empresa_id + proceso_id"]
+    C --> D["Claude genera\nrespuesta o borrador"]
+    D --> E["Respuesta + fuentes citadas"]
+```
+
+No existe un servicio de "agente" independiente — todo el código de orquestación vive en el backend.
+
+## Recuperación ante Desastres
+
+Ver [ADR-013](adrs/013-disaster-recovery-strategy.md) para el análisis completo.
+
+V1 opera en una única región (`eu-west-1`), sin despliegue activo multi-región. La recuperación se apoya en versionado/cifrado de S3, backups automáticos + Point-in-Time Recovery de Aurora, DLQ para trabajos no procesables, observabilidad vía CloudWatch, e infraestructura completamente reproducible mediante Terraform.
+
+## Estrategia de Edge / Red
+
+Ver [ADR-009](adrs/009-edge-network-strategy.md) para el análisis completo.
+
+La capa de entrada es 100% nativa de AWS — Route 53, CloudFront, WAF y Shield Standard — sin un proveedor de borde externo como Cloudflare.
+
+## Estrategia de Cómputo
+
+Ver [ADR-010](adrs/010-compute-strategy.md) para el análisis completo.
+
+API Gateway + Lambda, sin cómputo permanentemente activo (App Runner/ECS descartados para V1) — la carga es principalmente request-driven y el trabajo largo es asíncrono.
+
+## Estrategia de IaC
+
+Ver [ADR-002](adrs/002-iac-strategy.md) para la justificación completa.
+
+- **Terraform (HCL)** es la herramienta principal de IaC para toda la infraestructura de DocLens: Route 53, CloudFront, WAF, S3, Cognito, API Gateway, Lambda, Aurora Serverless v2, EventBridge, SQS/DLQ, SNS, Textract, Bedrock Knowledge Bases, IAM, cifrado y observabilidad.
+- Estado de Terraform: backend S3 + tabla de bloqueo DynamoDB.
+- El código de Terraform vive en `infra/terraform/` (proyecto Lambda) y `infra/` (plantilla Web).
+
+## Decisiones Arquitectónicas Clave
+
+| Decisión | Alternativa descartada | Justificación | ADR |
+|---|---|---|---|
+| Edge nativo de AWS | Cloudflare | Menor complejidad, un solo proveedor | [009](adrs/009-edge-network-strategy.md) |
+| API Gateway + Lambda | App Runner / ECS | No se necesita cómputo permanente | [010](adrs/010-compute-strategy.md) |
+| Subida vía URL S3 prefirmada | Subida a través del backend | Durabilidad, tamaño y costo | [005](adrs/005-upload-strategy.md) |
+| Procesamiento asíncrono | Procesamiento síncrono | Operaciones largas y resiliencia | [006](adrs/006-sync-vs-async-processing.md) / [011](adrs/011-document-processing-trigger.md) |
+| OCR híbrido | Textract siempre | Costo y latencia | [003](adrs/003-ocr-strategy.md) |
+| Bedrock Knowledge Bases | RAG manual | Menos código y mantenimiento | [001](adrs/001-rag-strategy.md) |
+| Aurora + pgvector | Otro vector store separado | Reutiliza la base de datos existente, soportado por Bedrock | [008](adrs/008-data-storage-strategy.md) |
+| Sin agente en V1 | Agente autónomo | El alcance actual no lo requiere | [012](adrs/012-no-autonomous-agent.md) |
+| SQS + DLQ + idempotencia | Ejecución directa | Recuperación frente a fallos | [011](adrs/011-document-processing-trigger.md) |
+| GuardDuty → EventBridge | Sondeo de tag con reintentos | Elimina la ventana de "escaneo aún no listo" | [011](adrs/011-document-processing-trigger.md) |
+| Región única (`eu-west-1`) | Despliegue activo multi-región | Complejidad y costo no justificados para V1 | [013](adrs/013-disaster-recovery-strategy.md) |

@@ -1,37 +1,37 @@
-# IaC Comparison: AWS CDK (C#) vs Terraform
+# Comparación de IaC: AWS CDK (C#) vs. Terraform
 
-> The formal decision is in [ADR-002](002-iac-strategy.md). **Terraform was chosen.**
-> This document preserves the real observations made while building both implementations.
-
----
-
-## Context
-
-Both implementations provision the same DocLens infrastructure:
-S3 bucket, DynamoDB table, Cognito User Pool, Lambda function, API Gateway HTTP v2, IAM roles, and CloudWatch log groups.
-
-The CDK version lives in `infra/src/DocLens.Infra/`.
-The Terraform version lives in `infra/terraform/`.
+> La decisión formal está en [ADR-002](002-iac-strategy.md). **Se eligió Terraform.**
+> Este documento conserva las observaciones reales hechas al construir ambas implementaciones.
 
 ---
 
-## Lines of Code
+## Contexto
 
-| Layer | CDK (C#) | Terraform (HCL) |
+Ambas implementaciones aprovisionan la misma infraestructura de DocLens:
+bucket S3, tabla DynamoDB (exploración inicial), User Pool de Cognito, función Lambda, API Gateway HTTP v2, roles IAM, y grupos de logs de CloudWatch.
+
+La versión CDK vive en `infra/src/DocLens.Infra/`.
+La versión Terraform vive en `infra/terraform/`.
+
+---
+
+## Líneas de código
+
+| Capa | CDK (C#) | Terraform (HCL) |
 | --- | --- | --- |
-| Storage (S3 + DynamoDB) | 39 lines | 85 lines |
-| Auth (Cognito) | 55 lines | 68 lines |
-| Processing (Lambda + API GW + IAM) | 125 lines | 165 lines |
-| Entry point + stack | 35 lines | 55 lines |
-| **Total** | **~254 lines** | **~373 lines** |
+| Almacenamiento (S3 + DynamoDB) | 39 líneas | 85 líneas |
+| Auth (Cognito) | 55 líneas | 68 líneas |
+| Procesamiento (Lambda + API GW + IAM) | 125 líneas | 165 líneas |
+| Punto de entrada + stack | 35 líneas | 55 líneas |
+| **Total** | **~254 líneas** | **~373 líneas** |
 
-CDK is ~30% more concise. The gap comes almost entirely from IAM — CDK generates policies automatically via `grantRead`, `grantReadWriteData`, and `AddToRolePolicy`. Terraform requires writing every IAM statement by hand.
+CDK es ~30% más conciso. La diferencia proviene casi enteramente de IAM — CDK genera políticas automáticamente vía `grantRead`, `grantReadWriteData`, y `AddToRolePolicy`. Terraform requiere escribir cada statement de IAM a mano.
 
 ---
 
-## Side-by-Side Examples
+## Ejemplos lado a lado
 
-### S3 bucket with encryption and SSL enforcement
+### Bucket S3 con cifrado y refuerzo de SSL
 
 === "CDK (C#)"
 
@@ -66,11 +66,11 @@ CDK is ~30% more concise. The gap comes almost entirely from IAM — CDK generat
     }
     ```
 
-`EnforceSSL = true` in CDK generates the bucket policy automatically. In Terraform, it requires a separate `aws_s3_bucket_policy` resource with a manually written IAM JSON document. This is representative of how the verbosity gap compounds.
+`EnforceSSL = true` en CDK genera automáticamente la política del bucket. En Terraform requiere un recurso `aws_s3_bucket_policy` separado con un documento IAM JSON escrito a mano. Esto es representativo de cómo se acumula la diferencia de verbosidad.
 
 ---
 
-### IAM permissions for Lambda
+### Permisos IAM para Lambda
 
 === "CDK (C#)"
 
@@ -96,65 +96,65 @@ CDK is ~30% more concise. The gap comes almost entirely from IAM — CDK generat
     }
     ```
 
-CDK infers least-privilege automatically from the L2 construct methods. Terraform requires knowing the exact IAM actions and writing them explicitly — which is more transparent but significantly more verbose, and easier to get wrong.
+CDK infiere el mínimo privilegio automáticamente a partir de los métodos de los constructos L2. Terraform requiere conocer las acciones IAM exactas y escribirlas explícitamente — lo cual es más transparente pero significativamente más verboso, y más fácil de hacer mal.
 
 ---
 
-## Real Issue Encountered: .NET 10 Runtime
+## Problema real encontrado: runtime .NET 10
 
-While building the Terraform version, the following validation error was hit:
+Al construir la versión Terraform, se encontró el siguiente error de validación:
 
 ```
 expected runtime to be one of [..., "dotnet8", ...], got "dotnet10"
 ```
 
-The `hashicorp/aws` provider 5.x does not yet include `dotnet10` as a valid runtime enum. The fix was to use `provided.al2023` (custom runtime) with a comment explaining the workaround.
+El provider `hashicorp/aws` 5.x aún no incluye `dotnet10` como un valor válido del enum. La solución fue usar `provided.al2023` (runtime personalizado) con un comentario explicando el workaround.
 
-The CDK version used `Runtime.DOTNET_8` without issue — and could reference `dotnet10` as a string if needed, because CDK passes the value directly to CloudFormation without enum validation at the framework level.
+La versión CDK usó `Runtime.DOTNET_8` sin problema — y podría referenciar `dotnet10` como string si fuera necesario, porque CDK pasa el valor directamente a CloudFormation sin validación de enum a nivel de framework.
 
-This is a concrete example of the provider lag described in [ADR-002](002-iac-strategy.md). It required a workaround on day one of writing the Terraform.
-
----
-
-## State Management
-
-| Aspect | CDK | Terraform |
-| --- | --- | --- |
-| State backend | CloudFormation (managed by AWS) | `.tfstate` file (S3 + DynamoDB locking for teams) |
-| `plan` equivalent | `cdk diff` | `terraform plan` |
-| Visibility | Stack events in CloudFormation console | Plain text diff in terminal |
-| Drift detection | CloudFormation drift detection (manual trigger) | `terraform plan` always shows drift |
-
-Terraform's `terraform plan` output is easier to read and more actionable than CloudFormation stack events. It shows exactly which resources will be created, modified, or destroyed before any change is applied.
-
-CloudFormation drift detection must be triggered manually and can be slow. `terraform plan` always reflects current state.
+Este es un ejemplo concreto del rezago del provider descrito en [ADR-002](002-iac-strategy.md). Requirió un workaround el primer día de escribir el Terraform.
 
 ---
 
-## Lambda Packaging
+## Gestión de estado
 
-| Aspect | CDK | Terraform |
+| Aspecto | CDK | Terraform |
 | --- | --- | --- |
-| Build + zip | Automatic via `BundlingOptions` | Manual — must build and zip before `terraform apply` |
-| Source change detection | CDK tracks asset hash | `filebase64sha256(var.lambda_zip_path)` |
-| CI integration | Single `cdk deploy` step | Requires a build step before `terraform apply` |
+| Backend de estado | CloudFormation (gestionado por AWS) | Archivo `.tfstate` (S3 + bloqueo DynamoDB para equipos) |
+| Equivalente a `plan` | `cdk diff` | `terraform plan` |
+| Visibilidad | Eventos de stack en la consola de CloudFormation | Diff en texto plano en la terminal |
+| Detección de drift | Detección de drift de CloudFormation (disparo manual) | `terraform plan` siempre muestra el drift |
 
-CDK's bundling integration is a meaningful advantage for Lambda-heavy projects. The `Code.FromAsset` with `BundlingOptions` runs `dotnet publish` inside a Docker container during `cdk deploy`, so the deployment pipeline is a single command.
+La salida de `terraform plan` es más fácil de leer y más accionable que los eventos de stack de CloudFormation. Muestra exactamente qué recursos se crearán, modificarán o destruirán antes de aplicar cualquier cambio.
 
-With Terraform, a build script (`dotnet publish` + `zip`) must run before `terraform apply`. This adds a step that must be wired into CI manually.
+La detección de drift de CloudFormation debe dispararse manualmente y puede ser lenta. `terraform plan` siempre refleja el estado actual.
 
 ---
 
-## Summary
+## Empaquetado de Lambda
 
-| Dimension | CDK (C#) | Terraform |
+| Aspecto | CDK | Terraform |
 | --- | --- | --- |
-| Lines of code | ~254 | ~373 |
-| Language | C# (same as Lambda code) | HCL (separate language) |
-| IAM verbosity | Low (auto-generated grants) | High (every action explicit) |
-| Lambda bundling | Automatic | Manual build step required |
-| .NET 10 runtime support | Yes | No — `provided.al2023` workaround needed |
-| State visibility | CloudFormation events | Explicit `terraform plan` diff |
-| Drift detection | Manual trigger | Built into `terraform plan` |
-| Team familiarity | Low | High |
-| Multi-cloud / external resources | No | Yes |
+| Build + zip | Automático vía `BundlingOptions` | Manual — debe compilarse y comprimirse antes de `terraform apply` |
+| Detección de cambios en el código fuente | CDK rastrea el hash del asset | `filebase64sha256(var.lambda_zip_path)` |
+| Integración con CI | Un solo paso `cdk deploy` | Requiere un paso de build antes de `terraform apply` |
+
+La integración de bundling de CDK es una ventaja significativa para proyectos con muchas Lambdas. `Code.FromAsset` con `BundlingOptions` ejecuta `dotnet publish` dentro de un contenedor Docker durante `cdk deploy`, de modo que el pipeline de despliegue es un solo comando.
+
+Con Terraform, un script de build (`dotnet publish` + `zip`) debe ejecutarse antes de `terraform apply`. Esto añade un paso que debe cablearse manualmente en el CI.
+
+---
+
+## Resumen
+
+| Dimensión | CDK (C#) | Terraform |
+| --- | --- | --- |
+| Líneas de código | ~254 | ~373 |
+| Lenguaje | C# (igual que el código Lambda) | HCL (lenguaje separado) |
+| Verbosidad de IAM | Baja (grants autogenerados) | Alta (cada acción explícita) |
+| Empaquetado de Lambda | Automático | Requiere paso de build manual |
+| Soporte de runtime .NET 10 | Sí | No — requiere workaround `provided.al2023` |
+| Visibilidad de estado | Eventos de CloudFormation | Diff explícito de `terraform plan` |
+| Detección de drift | Disparo manual | Integrada en `terraform plan` |
+| Familiaridad del equipo | Baja | Alta |
+| Multi-cloud / recursos externos | No | Sí |
