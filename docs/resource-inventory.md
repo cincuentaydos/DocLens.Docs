@@ -1,16 +1,16 @@
 # Inventario de Recursos — `sbx`
 
 !!! note "Foto de un momento, no estado en vivo"
-    Este documento es una **instantánea** tomada el **2026-09-12** contra la cuenta AWS dedicada del proyecto (`311844029093`, región `eu-west-1`). No se regenera automáticamente — la fuente de verdad en todo momento es `terraform state list` / `terraform output` de cada uno de los tres roots de Terraform. Si se aplican cambios después de esta fecha, este inventario queda desactualizado hasta la próxima revisión manual.
+    Este documento es una **instantánea** tomada el **2026-09-12** contra la cuenta AWS dedicada del proyecto (`<ACCOUNT_ID>`, región `eu-west-1`). No se regenera automáticamente — la fuente de verdad en todo momento es `terraform state list` / `terraform output` de cada uno de los tres roots de Terraform. Si se aplican cambios después de esta fecha, este inventario queda desactualizado hasta la próxima revisión manual.
 
 ## Resumen
 
 | Root de Terraform | Repo | Recursos gestionados |
 |---|---|---|
-| `main.tf` (raíz) | `DocLens.Infra` | 34 |
-| `governance/` | `DocLens.Infra` | 9 |
-| `infra/terraform/` | `DocLens.Lambda.Template` | 32 |
-| **Total** | | **75** (+ 4 datos auxiliares no persistentes: `aws_caller_identity`, `terraform_remote_state`) |
+| `main.tf` (raíz) | `DocLens.Infra` | 37 |
+| `governance/` | `DocLens.Infra` | 18 |
+| `infra/terraform/` | `DocLens.Lambda.Template` | 40 |
+| **Total** | | **95** (incluye datos auxiliares no persistentes: `aws_caller_identity`, `terraform_remote_state`, `tls_certificate`) |
 
 Cuenta única, sin AWS Organizations — ver [ADR-013](adrs/013-disaster-recovery-strategy.md) y la definición de V1.
 
@@ -37,7 +37,7 @@ Cuenta única, sin AWS Organizations — ver [ADR-013](adrs/013-disaster-recover
 
 | Recurso | Identificador |
 |---|---|
-| KMS Key | `arn:aws:kms:eu-west-1:311844029093:key/58688ef5-a086-48dc-9447-f5ff57e9f14e` |
+| KMS Key | `arn:aws:kms:eu-west-1:<ACCOUNT_ID>:key/58688ef5-a086-48dc-9447-f5ff57e9f14e` |
 | KMS Alias | `alias/doclens-app-data-sbx` |
 
 Cifra: almacenamiento de Aurora, el secret del master user, y el bucket de documentos. El bucket de frontend queda en SSE-S3 (AES256) — ver [ADR-008](adrs/008-data-storage-strategy.md) y el header comment de `modules/kms/main.tf`.
@@ -57,7 +57,7 @@ Esquema `kb` (extensión `vector`, tabla `kb.embeddings`, índices HNSW + GIN) c
 
 | Recurso | Identificador |
 |---|---|
-| Bucket S3 | `doclens-documents-311844029093-sbx` — versionado, SSE-KMS |
+| Bucket S3 | `doclens-documents-<ACCOUNT_ID>-sbx` — versionado, SSE-KMS |
 | GuardDuty Malware Protection Plan | sobre el bucket de documentos |
 | IAM Role (GuardDuty) | `doclens-guardduty-malware-sbx` |
 
@@ -76,7 +76,7 @@ Modelo de embeddings: `amazon.titan-embed-text-v2:0` (1024 dimensiones).
 | Recurso | Identificador |
 |---|---|
 | CloudFront Distribution | `https://dwqkm79ishahl.cloudfront.net` |
-| Bucket S3 (frontend) | `doclens-frontend-311844029093-sbx` — **vacío**, sin build desplegado todavía |
+| Bucket S3 (frontend) | `doclens-frontend-<ACCOUNT_ID>-sbx` — build de `DocLens.Web.Template` desplegado |
 | WAF WebACL | `doclens-cloudfront-sbx` (us-east-1) — Common Rule Set + rate limit 2000 req/5min por IP |
 
 **Sin dominio propio todavía** — `enable_custom_domain=false` (ver `envs/sbx.tfvars`): sin certificado ACM ni registro Route 53, la distribución se sirve directamente por su dominio `*.cloudfront.net`. Pendiente de un caso de soporte de AWS por una restricción de registro de dominio en una cuenta nueva.
@@ -88,9 +88,12 @@ Modelo de embeddings: `amazon.titan-embed-text-v2:0` (1024 dimensiones).
 | IAM Group | `doclens-developers` |
 | Policy attachment | `AdministratorAccess` (AWS managed) |
 | Policy inline (guardrail) | `doclens-developers-guardrail` — deniega escalación de privilegios IAM, billing/cierre de cuenta, y todo lo que no sea autogestión de MFA/password sin sesión MFA |
-| IAM Users | `gianclaudio.carella`, `alexis.mengual.vazquez`, `rodrigo.fernandez` — identidad + membresía al grupo, sin credenciales gestionadas por Terraform |
+| IAM Users | 3 usuarios developer — identidad + membresía al grupo, sin credenciales gestionadas por Terraform |
+| OIDC Provider | `token.actions.githubusercontent.com` — GitHub Actions, sin access keys de larga duración |
+| IAM Role (CD web) | `doclens-github-actions-web-deploy-sbx` — `s3:PutObject`/`DeleteObject`/`ListBucket` en el bucket de frontend, `cloudfront:CreateInvalidation` en la distribución |
+| IAM Role (CD backend) | `doclens-github-actions-lambda-deploy-sbx` — `lambda:UpdateFunctionCode` en las 3 Lambdas, `s3:PutObject`/`GetObject` en el prefijo `ci/` del bucket de artifacts |
 
-Usuario admin de cuenta (`gianclaudio-admin`, `AdministratorAccess`, fuera del grupo `developers`) creado manualmente, no por Terraform.
+Usuario admin de cuenta (`AdministratorAccess`, fuera del grupo `developers`) creado manualmente, no por Terraform.
 
 ## `DocLens.Lambda.Template` — backend (`modules/processing`)
 
@@ -106,9 +109,12 @@ Usuario admin de cuenta (`gianclaudio-admin`, `AdministratorAccess`, fuera del g
 | SNS — Textract completion | `doclens-textract-completion-sbx` |
 | EventBridge Rule | `doclens-guardduty-clean-sbx` — GuardDuty scan limpio → SQS |
 | CloudWatch Log Groups | uno por función Lambda, retención 30 días |
+| Bucket S3 (artifacts) | `doclens-lambda-artifacts-<ACCOUNT_ID>-sbx` — staging del ZIP de deploy (self-contained, >50MB) antes de `UpdateFunctionCode` |
+
+Swagger UI en `/swagger` — única ruta de API Gateway sin JWT (documentación, no datos); `TenantMiddleware` también la excluye de la resolución de tenant.
 
 ## Fuera de alcance en esta instantánea
 
 - **AWS CloudTrail / AWS Config** — no implementados (`governance/README.md`).
 - **AWS Budgets** — pendiente, configuración manual todavía no hecha.
-- **Dominio propio** (`doclens.org`) — registro fallido dos veces por restricción de cuenta nueva, caso de soporte abierto.
+- **Dominio propio** (`doclens.org`) — registro fallido repetidamente vía Route 53 por restricción de cuenta nueva, caso de soporte abierto.

@@ -35,24 +35,17 @@ Se agregó un módulo `modules/kms` con **una** key para Aurora + el bucket de d
 - Un tercer Deny bloquea **todo** excepto autogestión de MFA/password si la sesión no tiene MFA activo (patrón documentado de AWS).
 - Los usuarios IAM se crean sin login profile ni access key — Terraform no genera secretos que terminen en el state; las credenciales las emite un admin manualmente por consola, por persona.
 
-## Cronología del primer despliegue real
+### 4. CI/CD de código vía GitHub Actions + OIDC, separado del apply de infra
 
-Cada uno de estos problemas se descubrió recién al correr `terraform apply` contra la cuenta real — quedan documentados porque el mensaje de error de Terraform/AWS no siempre es obvio.
+Tanto `DocLens.Web.Template` como `DocLens.Lambda.Template` tienen su propio workflow `CD` (push a la rama principal, o disparo manual eligiendo ambiente). Ninguno de los dos corre `terraform apply` — solo despliegan código:
 
-| # | Problema | Causa | Fix |
-|---|---|---|---|
-| 1 | Push a git rechazado (~1.4 GB) | `DocLens.Infra` nunca tuvo `.gitignore` — `terraform init` local dejó el binario del provider AWS trackeado en un commit | `.gitignore` + `git rm --cached` + `commit --amend` |
-| 2 | `CreateSecurityGroup` — `InvalidParameterValue` | La descripción del security group de Aurora tenía un guión largo "—" (no ASCII); EC2 exige ASCII en `GroupDescription` | Reemplazado por un guión simple "-" |
-| 3 | `CreateMalwareProtectionPlan` — 400 | Al rol de GuardDuty le faltaban `s3:GetBucketNotification`/`s3:PutBucketNotification` (necesarios para configurar la notificación EventBridge del bucket) | Agregado el statement IAM |
-| 4 | `CreateDBCluster` — `Cannot find version 16.6` | La versión de motor Aurora PostgreSQL fijada (`16.6`) no existe en el catálogo actual de RDS | Cambiada a `16.10` (verificado con `aws rds describe-db-engine-versions`) |
-| 5 | `CreateMalwareProtectionPlan` — 400 (de nuevo) | Al mismo rol le faltaban además `events:PutRule`/`events:PutTargets` (GuardDuty gestiona su propia regla de EventBridge) | Agregado el statement IAM |
-| 6 | `CreateKnowledgeBase` — `rds:DescribeDBClusters` denegado | El rol del Knowledge Base solo tenía permisos `rds-data:*` (Data API), no `rds:DescribeDBClusters` (Bedrock valida la config de storage describiendo el cluster) | Agregado el statement IAM |
-| 7 | `CreateKnowledgeBase` — `relation "kb.embeddings" does not exist` | La migración de esquema (`CREATE EXTENSION vector`, esquema `kb`, tabla `kb.embeddings`) es manual por diseño (ADR-008) — nunca se había corrido | Ejecutada vía RDS Data API (`aws rds-data execute-statement`) |
-| 8 | `CreateKnowledgeBase` — `chunk_texto column must be indexed` | Bedrock exige un índice GIN de full-text sobre la columna de texto, además del índice HNSW sobre el vector | Índice agregado (`CREATE INDEX ... USING gin (to_tsvector(...))`) |
-| 9 | Registro de `doclens.org` en Route 53 — `FAILED` (3 intentos, con root y con IAM admin) | Restricción de antifraude de AWS en cuentas recién creadas — no depende del usuario IAM que lo pide | Caso de soporte de AWS abierto; mientras tanto, `edge` se hizo dominio-opcional (`enable_custom_domain`) para no bloquear el resto del despliegue |
+- **Web**: build → `aws s3 sync` al bucket de frontend → invalidación de CloudFront.
+- **Lambda**: `dotnet test` → `dotnet publish` self-contained → sube el ZIP a un bucket S3 de artifacts (necesario porque un build self-contained de .NET supera los 50MB del límite de subida directa de `UpdateFunctionCode`) → `aws lambda update-function-code` en las 3 funciones.
+
+Autenticación contra AWS vía **OIDC** (`aws_iam_openid_connect_provider` + un rol IAM por repo/ambiente en `governance/`), sin access keys de larga duración guardadas como secret de GitHub — el patrón que ya pedía `architecture.md`. Cambios de infraestructura (rutas, roles, colas) siguen yendo por un `terraform apply` revisado aparte.
 
 ## Estado al cierre de esta bitácora (2026-09-12)
 
-Desplegado y funcionando en `sbx`: red, Cognito, Aurora + pgvector, KMS, bucket de documentos + GuardDuty, Knowledge Base de Bedrock, backend completo (API + Processor + OCR Lambdas, API Gateway, colas), CloudFront + WAF + bucket de frontend (sin dominio propio todavía), y los 3 usuarios developers con sus guardrails. Ver [Inventario de Recursos](resource-inventory.md) para el detalle completo.
+Desplegado y funcionando en `sbx`: red, Cognito, Aurora + pgvector, KMS, bucket de documentos + GuardDuty, Knowledge Base de Bedrock, backend completo (API + Processor + OCR Lambdas, API Gateway, colas, Swagger UI en `/swagger`), CloudFront + WAF + bucket de frontend con el build de `DocLens.Web.Template` ya desplegado (sin dominio propio todavía), los 3 usuarios developers con sus guardrails, y pipelines de CI/CD funcionando de punta a punta en ambos repos de aplicación. Ver [Inventario de Recursos](resource-inventory.md) para el detalle completo.
 
-Pendiente: desplegar el build de `DocLens.Web.Template` al bucket de frontend, ajustar el CORS del bucket de documentos al dominio real una vez resuelto el registro, budget con alarma, CloudTrail/Config.
+Pendiente: dominio propio (`doclens.org` — registro vía Route 53 falló repetidamente por una restricción de cuenta nueva; caso de soporte de AWS abierto), budget con alarma, CloudTrail/Config.
