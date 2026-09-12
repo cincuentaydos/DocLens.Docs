@@ -1,0 +1,8 @@
+# MkDocs build output — regenerated from docs/, never commit
+site/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

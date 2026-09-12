@@ -83,6 +83,9 @@ nav:
   - Flujo de Datos: data-flow.md
   - Referencia de API: api-reference.md
   - Alta de Tenants: tenant-onboarding.md
+  - Infraestructura:
+    - Inventario de Recursos (sbx): resource-inventory.md
+    - Bitácora del Despliegue (sbx): infra-deployment-log.md
   - ADRs:
     - ADR-001 — Estrategia de RAG: adrs/001-rag-strategy.md
     - ADR-002 — Estrategia de IaC: adrs/002-iac-strategy.md
