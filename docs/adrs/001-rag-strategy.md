@@ -19,14 +19,14 @@ DocLens mantiene la propiedad de la ingesta de documentos, el pipeline de OCR, l
 | Tiempo de valor | Knowledge Bases se pone en marcha en días, no semanas — sin clúster que aprovisionar |
 | Separación de responsabilidades | DocLens se enfoca en la calidad del documento; AWS gestiona la infraestructura de retrieval |
 | Estrategia de chunking | El chunking semántico (basado en NLP) es el predeterminado para los tipos de documento de DocLens |
-| Aislamiento por tenant | Silo lógico vía filtro de metadatos `{ "empresa_id": "..." }` en cada llamada `Retrieve` |
+| Aislamiento por tenant y por proceso | Silo lógico vía filtro de metadatos `{ "empresa_id": "...", "proceso_id": "..." }` en cada llamada `Retrieve` |
 | Vector store | Aurora PostgreSQL + `pgvector` (ver [ADR-008](008-data-storage-strategy.md)) — reutiliza el mismo motor que los datos operativos |
 | Ruta de migración | Una interfaz `IRetrievalService` oculta la implementación — puede reemplazarse si es necesario |
 
 ## Restricciones a vigilar
 
-!!! danger "Aislamiento por tenant"
-    El filtro `empresa_id` en cada llamada de retrieval nunca debe ser opcional — es la única barrera contra el acceso cruzado entre tenants.
+!!! danger "Aislamiento por tenant y por proceso"
+    Los filtros `empresa_id` **y** `proceso_id` en cada llamada de retrieval nunca deben ser opcionales. `empresa_id` es la única barrera contra el acceso cruzado entre despachos (tenants); `proceso_id` es la única barrera contra el acceso cruzado entre casos de un mismo despacho — por ejemplo, que una consulta sobre un proceso de divorcio recupere fragmentos de un proceso laboral distinto solo porque ambos pertenecen al mismo despacho. `kb.embeddings` ya tiene `proceso_id` como columna (ver [ADR-008](008-data-storage-strategy.md)); omitir el filtro en el código de retrieval sigue siendo posible aunque el dato exista.
 
 - El chunking no es totalmente controlable (no se pueden usar directamente los límites de bloque de Textract).
 - El modelo de embedding está limitado al catálogo de Bedrock (Titan Embeddings V2, Cohere Embed v3).

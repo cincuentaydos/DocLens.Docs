@@ -50,6 +50,7 @@ extra_javascript:
 
 plugins:
   - search
+  # - glightbox  # bloqueado localmente por Application Control, ver nota
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -100,6 +101,7 @@ nav:
     - ADR-011 — Disparo del Procesamiento de Documentos: adrs/011-document-processing-trigger.md
     - ADR-012 — Sin Agente Autónomo: adrs/012-no-autonomous-agent.md
     - ADR-013 — Recuperación ante Desastres: adrs/013-disaster-recovery-strategy.md
+    - ADR-014 — Redacción de PII en el Knowledge Base: adrs/014-pii-redaction.md
     - Comparación de IaC (CDK vs Terraform): adrs/iac-comparison.md
   - Proyectos:
     - DocLens.Lambda: projects/lambda.md
