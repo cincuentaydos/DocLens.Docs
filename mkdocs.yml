@@ -82,6 +82,7 @@ nav:
   - Resumen: overview.md
   - Arquitectura: architecture.md
   - Flujo de Datos: data-flow.md
+  - PoC Legislación Española: poc-legislacion-es.md
   - Referencia de API: api-reference.md
   - Alta de Tenants: tenant-onboarding.md
   - Infraestructura:

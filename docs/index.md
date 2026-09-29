@@ -8,7 +8,7 @@ hide:
 
 | Repositorio | Descripción |
 |---|---|
-| [`DocLens.Lambda.Template`](https://github.com/cincuentaydos/DocLens.Lambda.Template) | Núcleo del backend — API de gestión de casos legales y procesamiento de documentos (.NET 10, Lambda) |
+| [`DocLens.Backend`](https://github.com/cincuentaydos/DocLens.Backend) | Núcleo del backend — API de gestión de casos legales y procesamiento de documentos (.NET 10, Lambda) |
 | [`DocLens.Web.Template`](https://github.com/cincuentaydos/DocLens.Web.Template) | Plantilla de frontend en React 19 (Feature-Sliced Design) |
 | [`DocLens.Skills`](https://github.com/cincuentaydos/DocLens.Skills) | Marketplace de plugins para GitHub Copilot / Claude Code |
 

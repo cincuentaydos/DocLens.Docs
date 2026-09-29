@@ -2,7 +2,7 @@
 
 Núcleo del backend. Compuesto por dos funciones Lambda: una **Lambda de API** que maneja las solicitudes de API Gateway (Procesos, Clientes, Documentos, Usuarios, Permisos, IA), y una **Lambda Processor** que consume eventos de SQS (disparados por GuardDuty → EventBridge, ver [ADR-011](../adrs/011-document-processing-trigger.md)) y ejecuta OCR + extracción semántica.
 
-**Repositorio:** [`DocLens.Lambda.Template`](https://github.com/cincuentaydos/DocLens.Lambda.Template)
+**Repositorio:** [`DocLens.Backend`](https://github.com/cincuentaydos/DocLens.Backend)
 
 ## Stack
 

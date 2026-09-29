@@ -28,7 +28,7 @@ DocLens reduce ese trabajo manual mediante IA, permitiendo que los profesionales
 
 DocLens está compuesto por cuatro repositorios:
 
-### `DocLens.Lambda.Template`
+### `DocLens.Backend`
 
 El **núcleo del backend**. Una API mínima de ASP.NET Core alojada en AWS Lambda (.NET 10). Gestiona procesos, clientes, documentos, usuarios y permisos; ejecuta OCR y análisis semántico vía Bedrock.
 
