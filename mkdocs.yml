@@ -88,6 +88,7 @@ nav:
   - Infraestructura:
     - Inventario de Recursos (sbx): resource-inventory.md
     - Bitácora del Despliegue (sbx): infra-deployment-log.md
+    - Plan de Gobernanza: governance-plan.md
   - ADRs:
     - ADR-001 — Estrategia de RAG: adrs/001-rag-strategy.md
     - ADR-002 — Estrategia de IaC: adrs/002-iac-strategy.md

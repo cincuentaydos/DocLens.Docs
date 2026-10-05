@@ -143,6 +143,5 @@ Se dejan a propósito en pie por ahora — la limpieza (borrarlos) queda para un
 
 ## Fuera de alcance en esta instantánea
 
-- **AWS CloudTrail / AWS Config** — no implementados (`governance/README.md`).
-- **AWS Budgets** — pendiente, configuración manual todavía no hecha.
+- **AWS CloudTrail / AWS Config / AWS Budgets** — no implementados; ver el [Plan de Gobernanza](governance-plan.md).
 - **Dominio propio** (`doclens.org`) — registro fallido repetidamente vía Route 53 por restricción de cuenta nueva, caso de soporte abierto.
